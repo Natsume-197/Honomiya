@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { TranscriptionJob } from "../provider";
 import { HONOMIYA_TRANSCRIPT_SCHEMA } from "../transcript";
 import type { ModalTranscriptionInput } from "./modal";
 import {
@@ -45,7 +46,7 @@ describe("Modal transcription provider", () => {
 
 	test("sends bytes and metadata through the gateway", async () => {
 		let received: ModalTranscriptionInput | undefined;
-		let startedJob: { provider: "modal"; id: string } | undefined;
+		let startedJob: TranscriptionJob | undefined;
 		const provider = new ModalTranscriptionProvider({
 			readBytes: async () => new Uint8Array([1, 2, 3]),
 			createGateway: () => ({

@@ -54,6 +54,7 @@ export {
 export {
 	type AlignOptions,
 	AlignOptionsError,
+	DEFAULT_TIMED_TEXT_MIN_DIRECT_COVERAGE,
 	parseAlignOptions,
 } from "./options/align";
 export {
@@ -61,6 +62,25 @@ export {
 	type TranscribeOptions,
 	TranscribeOptionsError,
 } from "./options/transcribe";
+export {
+	type ParsedSrt,
+	parseSrt,
+	SRT_ADAPTER_REVISION,
+	type SrtCue,
+	type SrtTranscriptReport,
+	srtToTranscript,
+	type TimedTextIssue,
+	type TimedTextIssueReason,
+} from "./timed-text/srt";
+export {
+	DEFAULT_TIMED_TEXT_VERIFICATION_SAMPLES,
+	planTimedTextVerificationSamples,
+	type TimedTextVerificationDependencies,
+	type TimedTextVerificationReport,
+	type TimedTextVerificationSample,
+	timedTextSampleScore,
+	verifyTimedTextAgainstAudio,
+} from "./timed-text/verify";
 export {
 	type TranscribeAudioDependencies,
 	type TranscribeAudioRequest,

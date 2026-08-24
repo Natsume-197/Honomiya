@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, extname } from "node:path";
 import packageJson from "../../package.json" with { type: "json" };
 import {
 	HONOMIYA_MANIFEST_SCHEMA,
@@ -13,9 +13,18 @@ import {
 } from "../config/quality";
 import type { EbookDocument } from "../ebook-parser/ebook";
 import { openEbookFile } from "../ebook-parser/node";
-import type { AlignOptions, InterpolationMode } from "../options/align";
+import {
+	type AlignOptions,
+	DEFAULT_TIMED_TEXT_MIN_DIRECT_COVERAGE,
+	type InterpolationMode,
+} from "../options/align";
 import { hashFileSha256 } from "../support/file-hash";
 import { writeJsonAtomically } from "../support/json-file";
+import { type SrtTranscriptReport, srtToTranscript } from "../timed-text/srt";
+import {
+	type TimedTextVerificationReport,
+	verifyTimedTextAgainstAudio,
+} from "../timed-text/verify";
 import {
 	DEFAULT_PARALLEL_CHUNKS,
 	type TranscribeAudioRequest,
@@ -56,9 +65,10 @@ export interface AlignmentExecutionReport {
 	parameters: typeof ALIGNMENT_PARAMETERS & {
 		quality: QualityPreset;
 		interpolationMode: InterpolationMode;
+		minDirectCoverage?: number;
 	};
 	transcription: {
-		mode: "provider" | "precomputed";
+		mode: "provider" | "precomputed" | "timed-text";
 		provider?: { name: string; revision: string };
 		sources: Array<{
 			audioFileIndex: number;
@@ -72,6 +82,7 @@ export interface AlignmentExecutionReport {
 			retries?: number;
 			parallelChunks?: number;
 		}>;
+		timedText?: SrtTranscriptReport[];
 	};
 	language?: string;
 	performance: {
@@ -79,6 +90,7 @@ export interface AlignmentExecutionReport {
 		transcriptionMs: number;
 		ebookExtractionMs: number;
 		alignmentMs: number;
+		verificationMs: number;
 		totalMs: number;
 		rssBytes: number;
 		heapUsedBytes: number;
@@ -115,6 +127,15 @@ export interface AlignPublicationDependencies {
 	probeAudio(path: string): Promise<AudioProbe>;
 	hashFile(path: string): Promise<string>;
 	readTranscript(path: string): Promise<unknown>;
+	readTimedText?(path: string): Promise<string>;
+	verifyTimedText?(input: {
+		transcript: HonomiyaTranscript;
+		audioPath: string;
+		provider: TranscriptionProvider;
+		language?: string;
+		samples?: number;
+		signal?: AbortSignal;
+	}): Promise<TimedTextVerificationReport>;
 	now(): Date;
 }
 
@@ -126,6 +147,11 @@ const runtimeDependencies: AlignPublicationDependencies = {
 	probeAudio,
 	hashFile: hashFileSha256,
 	readTranscript: async (path) => JSON.parse(await Bun.file(path).text()),
+	readTimedText: async (path) =>
+		new TextDecoder("utf-8", { fatal: true }).decode(
+			await Bun.file(path).arrayBuffer(),
+		),
+	verifyTimedText: verifyTimedTextAgainstAudio,
 	now: () => new Date(),
 };
 
@@ -137,14 +163,31 @@ export async function alignPublication(
 	const startedAt = performance.now();
 	const quality = options.quality ?? DEFAULT_QUALITY;
 	const qualitySettings = QUALITY_SETTINGS[quality];
+	const timedTextPaths = options.timedTextPaths ?? [];
+	const minDirectCoverage =
+		options.minDirectCoverage ??
+		(timedTextPaths.length > 0
+			? DEFAULT_TIMED_TEXT_MIN_DIRECT_COVERAGE
+			: undefined);
+	for (const path of timedTextPaths) {
+		if (extname(path).toLowerCase() !== ".srt") {
+			throw new Error(
+				`Unsupported timed-text format for ${path}; only UTF-8 SRT is currently supported`,
+			);
+		}
+	}
 	const interpolationMode =
-		options.interpolationMode ?? qualitySettings.interpolationMode;
+		options.interpolationMode ??
+		(timedTextPaths.length > 0
+			? "conservative"
+			: qualitySettings.interpolationMode);
 	const timestampBackend =
 		options.timestampBackend ?? qualitySettings.timestampBackend;
 	const hashingStartedAt = performance.now();
-	const [ebookSha256, ...audioHashes] = await Promise.all([
+	const [ebookSha256, audioHashes, timedTextHashes] = await Promise.all([
 		dependencies.hashFile(options.ebookPath),
-		...options.audioPaths.map((path) => dependencies.hashFile(path)),
+		Promise.all(options.audioPaths.map((path) => dependencies.hashFile(path))),
+		Promise.all(timedTextPaths.map((path) => dependencies.hashFile(path))),
 	]);
 	const hashingMs = performance.now() - hashingStartedAt;
 	const ebook = await dependencies.openEbook(options.ebookPath);
@@ -161,8 +204,10 @@ export async function alignPublication(
 
 	const transcriptionStartedAt = performance.now();
 	let provider: TranscriptionProvider | undefined;
+	let verificationProvider: TranscriptionProvider | undefined;
 	let transcripts: HonomiyaTranscript[];
 	const transcriptionResults: TranscribeAudioResult[] = [];
+	const timedTextReports: SrtTranscriptReport[] = [];
 	if (options.transcriptPaths.length > 0) {
 		transcripts = await Promise.all(
 			options.transcriptPaths.map(async (path) =>
@@ -181,6 +226,53 @@ export async function alignPublication(
 					`Transcript ${options.transcriptPaths[index]} does not match audio ${options.audioPaths[index]}`,
 				);
 			}
+		}
+	} else if (timedTextPaths.length > 0) {
+		if (!dependencies.readTimedText) {
+			throw new Error("A timed-text reader is required");
+		}
+		const probes = await Promise.all(
+			options.audioPaths.map((audioPath) => dependencies.probeAudio(audioPath)),
+		);
+		const texts = await Promise.all(
+			timedTextPaths.map((path) => dependencies.readTimedText?.(path)),
+		);
+		const convertedSources = timedTextPaths.map((path, index) => {
+			const audioPath = options.audioPaths[index];
+			const audioSha256 = audioHashes[index];
+			const probe = probes[index];
+			const sha256 = timedTextHashes[index];
+			const text = texts[index];
+			if (
+				!audioPath ||
+				!audioSha256 ||
+				!probe ||
+				!sha256 ||
+				text === undefined
+			) {
+				throw new Error(`Could not prepare timed-text source ${path}`);
+			}
+			const converted = srtToTranscript({
+				text,
+				path,
+				sha256,
+				audioPath,
+				audioSha256,
+				audioDurationMs: probe.durationMs,
+				language,
+			});
+			return converted;
+		});
+		transcripts = convertedSources.map((source) => source.transcript);
+		timedTextReports.push(...convertedSources.map((source) => source.report));
+		if (options.verificationProvider) {
+			if (!dependencies.verifyTimedText) {
+				throw new Error("A timed-text audio verifier is required");
+			}
+			verificationProvider = dependencies.createProvider(
+				options.verificationProvider,
+				"faster-whisper",
+			);
 		}
 	} else {
 		if (!options.provider) {
@@ -246,11 +338,47 @@ export async function alignPublication(
 		{ interpolationMode },
 	);
 	const alignmentMs = performance.now() - alignmentStartedAt;
+	if (
+		minDirectCoverage !== undefined &&
+		alignment.report.directCoverage < minDirectCoverage
+	) {
+		throw new Error(
+			`Direct alignment coverage ${(alignment.report.directCoverage * 100).toFixed(1)}% is below the required ${(minDirectCoverage * 100).toFixed(1)}%; the ebook and timed text may be different editions`,
+		);
+	}
+	const verificationStartedAt = performance.now();
+	if (verificationProvider) {
+		for (const [index, transcript] of transcripts.entries()) {
+			const audioPath = options.audioPaths[index];
+			const report = timedTextReports[index];
+			if (!audioPath || !report || !dependencies.verifyTimedText) {
+				throw new Error(`Could not verify timed-text source ${index + 1}`);
+			}
+			const verification = await dependencies.verifyTimedText({
+				transcript,
+				audioPath,
+				provider: verificationProvider,
+				language,
+				samples: options.verificationSamples,
+				signal: controls.signal,
+			});
+			report.verification = verification;
+			if (verification.status === "failed") {
+				throw new Error(
+					`Timed-text verification failed for ${timedTextPaths[index]}: ${(verification.averageScore * 100).toFixed(1)}% average sample similarity`,
+				);
+			}
+		}
+	}
+	const verificationMs = performance.now() - verificationStartedAt;
 	const memory = process.memoryUsage();
 	const manifest = parseHonomiyaManifest({
 		schema: HONOMIYA_MANIFEST_SCHEMA,
 		createdAt: dependencies.now().toISOString(),
 		generator: { name: "honomiya", version: packageJson.version },
+		transcription: {
+			origin: timedTextPaths.length > 0 ? "external" : "honomiya",
+		},
 		granularity: "sentence",
 		sources: {
 			ebook: {
@@ -282,9 +410,14 @@ export async function alignPublication(
 				...ALIGNMENT_PARAMETERS,
 				quality,
 				interpolationMode,
+				...(minDirectCoverage === undefined ? {} : { minDirectCoverage }),
 			},
 			transcription: {
-				mode: provider ? "provider" : "precomputed",
+				mode: provider
+					? "provider"
+					: timedTextPaths.length > 0
+						? "timed-text"
+						: "precomputed",
 				...(provider
 					? {
 							provider: {
@@ -317,6 +450,7 @@ export async function alignPublication(
 							: {}),
 					};
 				}),
+				...(timedTextReports.length > 0 ? { timedText: timedTextReports } : {}),
 			},
 			...(language ? { language } : {}),
 			performance: {
@@ -324,6 +458,7 @@ export async function alignPublication(
 				transcriptionMs: Math.round(transcriptionMs),
 				ebookExtractionMs: Math.round(ebookExtractionMs),
 				alignmentMs: Math.round(alignmentMs),
+				verificationMs: Math.round(verificationMs),
 				totalMs: Math.round(performance.now() - startedAt),
 				rssBytes: memory.rss,
 				heapUsedBytes: memory.heapUsed,

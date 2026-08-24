@@ -196,6 +196,86 @@ describe("align options", () => {
 		});
 	});
 
+	test("accepts one timed-text file per audio with conservative interpolation", () => {
+		const options = parseAlignOptions(
+			[
+				"--ebook",
+				"book.epub",
+				"--audio",
+				"01.m4b",
+				"--audio",
+				"02.m4b",
+				"--timed-text",
+				"01.srt",
+				"--timed-text",
+				"02.srt",
+			],
+			{},
+		);
+		expect(options).toMatchObject({
+			audioPaths: ["01.m4b", "02.m4b"],
+			transcriptPaths: [],
+			timedTextPaths: ["01.srt", "02.srt"],
+			interpolationMode: "conservative",
+			minDirectCoverage: 0.8,
+		});
+	});
+
+	test("configures timed-text edition and audio verification", () => {
+		const options = parseAlignOptions(
+			[
+				...requiredArguments,
+				"--timed-text",
+				"track.srt",
+				"--min-direct-coverage",
+				"0.9",
+				"--verify-provider",
+				"local",
+				"--verification-samples",
+				"5",
+			],
+			{},
+		);
+
+		expect(options).toMatchObject({
+			minDirectCoverage: 0.9,
+			verificationProvider: "local",
+			verificationSamples: 5,
+		});
+		expect(() =>
+			parseAlignOptions([...requiredArguments, "--verify-provider", "modal"], {
+				HONOMIYA_PROVIDER: "modal",
+			}),
+		).toThrow("--verify-provider requires --timed-text");
+	});
+
+	test("rejects ambiguous or unsupported timed-text combinations", () => {
+		expect(() =>
+			parseAlignOptions(
+				[...requiredArguments, "--audio", "02.mp3", "--timed-text", "01.srt"],
+				{},
+			),
+		).toThrow("number of --timed-text and --audio values must match");
+		expect(() =>
+			parseAlignOptions(
+				[...requiredArguments, "--timed-text", "01.srt", "--provider", "modal"],
+				{},
+			),
+		).toThrow("--provider cannot be combined with --timed-text");
+		expect(() =>
+			parseAlignOptions(
+				[
+					...requiredArguments,
+					"--timed-text",
+					"01.srt",
+					"--interpolation",
+					"complete",
+				],
+				{},
+			),
+		).toThrow("complete is unavailable with --timed-text");
+	});
+
 	test("rejects partial transcript sets and an ambiguous provider", () => {
 		expect(() =>
 			parseAlignOptions(

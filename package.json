@@ -1,6 +1,6 @@
 {
 	"name": "honomiya",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Command-line toolkit for synchronizing ebooks with audiobooks.",
 	"private": true,
 	"type": "module",
@@ -13,7 +13,7 @@
 	},
 	"scripts": {
 		"honomiya": "bun run ./src/cli.ts",
-		"build": "bun build ./src/cli.ts --target=bun --outdir=dist",
+		"build": "bun build ./src/cli.ts --target=bun --outdir=dist && cp ./src/transcription/providers/local-worker.py ./dist/local-worker.py",
 		"check-types": "tsc --noEmit",
 		"test": "bun test src",
 		"validate": "bun run check-types && bun test src && bun run build"

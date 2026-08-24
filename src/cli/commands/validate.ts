@@ -26,6 +26,7 @@ export async function runValidateCommand(
 		const manifest = parseHonomiyaManifest(JSON.parse(raw));
 		const summary = {
 			schema: manifest.schema,
+			transcriptionOrigin: manifest.transcription?.origin ?? null,
 			granularity: manifest.granularity,
 			audioFiles: manifest.sources.audioFiles.length,
 			cues: manifest.cues.length,

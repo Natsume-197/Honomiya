@@ -1,10 +1,14 @@
 import {
+	LocalTranscriptionProvider,
+	type LocalTranscriptionProviderOptions,
+} from "./providers/local";
+import {
 	ModalTranscriptionProvider,
 	type ModalTranscriptionProviderOptions,
 } from "./providers/modal";
 import type { HonomiyaTranscript, TimestampBackend } from "./transcript";
 
-export const TRANSCRIPTION_PROVIDER_NAMES = ["modal"] as const;
+export const TRANSCRIPTION_PROVIDER_NAMES = ["local", "modal"] as const;
 
 export type TranscriptionProviderName =
 	(typeof TRANSCRIPTION_PROVIDER_NAMES)[number];
@@ -35,6 +39,7 @@ export interface TranscriptionProvider {
 
 export interface TranscriptionProviderOptions {
 	timestampBackend?: TimestampBackend;
+	local?: Omit<LocalTranscriptionProviderOptions, "timestampBackend">;
 	modal?: Omit<ModalTranscriptionProviderOptions, "timestampBackend">;
 }
 
@@ -49,6 +54,11 @@ export function createTranscriptionProvider(
 	options: TranscriptionProviderOptions = {},
 ): TranscriptionProvider {
 	switch (name) {
+		case "local":
+			return new LocalTranscriptionProvider({
+				...options.local,
+				timestampBackend: options.timestampBackend,
+			});
 		case "modal":
 			return new ModalTranscriptionProvider({
 				...options.modal,

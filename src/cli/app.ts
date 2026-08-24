@@ -10,8 +10,9 @@ import type { CliCommands, CliContext, CliIO } from "./types";
 const HELP = `Honomiya ${packageJson.version}
 
 Usage:
-  honomiya align --ebook <book.epub> --audio <track> --provider modal --srt
-  honomiya transcribe --audio <track> --provider modal
+  honomiya align --ebook <book.epub> --audio <track> --provider <local|modal> --srt
+  honomiya align --ebook <book.epub> --audio <track> --timed-text <file.srt>
+  honomiya transcribe --audio <track> --provider <local|modal>
   honomiya validate <manifest.json> [--json]
   honomiya --version
   honomiya --help

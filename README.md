@@ -11,6 +11,8 @@ reader or library application.
 
 - [Bun](https://bun.sh/) 1.3.14 or newer.
 - `ffmpeg` and `ffprobe` when transcribing audio.
+- Python 3.10 or newer with the packages in `requirements-local.txt` when using
+  the local provider.
 - A [Modal](https://modal.com/) account and credentials when using the Modal
   provider.
 
@@ -20,7 +22,30 @@ Install the dependencies:
 bun install
 ```
 
-Deploy the transcription provider once:
+For transcription on the local machine, create an isolated Python environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-local.txt
+```
+
+Point Honomiya at that environment and select the local provider:
+
+```bash
+HONOMIYA_LOCAL_PYTHON=.venv/bin/python bun run honomiya align \
+  --ebook book.epub \
+  --audio book.m4b \
+  --provider local
+```
+
+The first run downloads the selected Whisper model. The default `large-v3`
+model and automatic device/compute selection can be changed with
+`HONOMIYA_LOCAL_MODEL`, `HONOMIYA_LOCAL_DEVICE`,
+`HONOMIYA_LOCAL_COMPUTE_TYPE`, and `HONOMIYA_LOCAL_MODEL_CACHE`. For example, a
+CPU-oriented setup can use `HONOMIYA_LOCAL_DEVICE=cpu` and
+`HONOMIYA_LOCAL_COMPUTE_TYPE=int8`.
+
+For Modal transcription, deploy the remote provider once:
 
 ```bash
 uvx --from modal==1.5.3 modal setup
@@ -35,7 +60,7 @@ Modal reads credentials from `~/.modal.toml` or from `MODAL_TOKEN_ID` and
 | Command | Input | What it does | Output |
 | --- | --- | --- | --- |
 | `transcribe` | Audio only | Runs speech recognition and records the detected words with their timestamps. It does not read or align an ebook. | An intermediate, reusable `honomiya.transcript.v1` JSON file. |
-| `align` | Ebook and audio, plus a provider or reusable transcript | Matches the ebook's exact sentences to the audio timestamps. It can run transcription internally when given a provider. | The final read-and-listen manifest, report and optional SRT files. |
+| `align` | Ebook and audio, plus a provider, reusable transcript or timed-text file | Matches the ebook's exact sentences to the supplied audio timestamps. It can run transcription internally when given a provider. | The final read-and-listen manifest, report and optional SRT files. |
 
 ### Direct alignment
 
@@ -77,6 +102,41 @@ The useful order is `transcribe → align`. Running `transcribe` after
 `align --provider` is normally redundant because `align` already transcribed
 the audio internally.
 
+### Align from existing SRT subtitles
+
+Use `--timed-text` when timestamps already exist, such as audiobook subtitles. This path does not run Whisper or contact a provider:
+
+```bash
+bun run honomiya align \
+  --ebook book.epub \
+  --audio book.m4b \
+  --timed-text book.srt
+```
+
+Repeat `--audio` and `--timed-text` in matching order for a multi-track
+audiobook. Honomiya validates the SRT against each audio duration, excludes
+structurally unsafe cues, aligns its text to the ebook and records all excluded
+cues in the report. Timed text uses conservative interpolation by default
+because SRT files do not contain a speech timeline.
+
+Timed-text alignment requires at least 80% direct ebook coverage by default, so
+an incompatible ebook edition fails instead of producing a sparse manifest.
+Use `--min-direct-coverage` to adjust that boundary. To also confirm that the
+timestamps belong to the selected audio edition, ask Honomiya to transcribe a
+few distributed samples:
+
+```bash
+bun run honomiya align \
+  --ebook book.epub \
+  --audio book.m4b \
+  --timed-text book.srt \
+  --verify-provider local \
+  --verification-samples 3
+```
+
+Sample verification is explicit because `modal` uploads the extracted samples
+and may incur provider cost. `local` keeps them on the machine.
+
 ### Validate the result
 
 Validate a generated manifest independently:
@@ -92,8 +152,12 @@ bun run honomiya validate book.honomiya.alignment.json --json
 | --- | --- | --- | --- |
 | `--ebook <path>` | `align` | Required | Ebook to align. |
 | `--audio <path>` | `align`, `transcribe` | Required | Audio source. Repeat it for ordered multi-track input with `align`; `transcribe` accepts one source. |
-| `--provider <name>` | `align`, `transcribe` | `modal`; required unless `align` receives transcripts or `HONOMIYA_PROVIDER` is set | Selects the transcription provider. It cannot be combined with `--transcript`. |
+| `--provider <name>` | `align`, `transcribe` | `local` or `modal`; required unless `align` receives a transcript/timed-text source or `HONOMIYA_PROVIDER` is set | Selects the transcription provider. It cannot be combined with `--transcript` or `--timed-text`. |
 | `--transcript <path>` | `align` | Optional; repeatable | Reuses one transcript per audio source, in matching order. |
+| `--timed-text <path>` | `align` | Optional; repeatable | Uses one UTF-8 SRT file per audio source, in matching order. It cannot be combined with `--provider` or `--transcript`. |
+| `--min-direct-coverage <0-1>` | `align` | `0.8` with timed text | Rejects an alignment whose directly matched ebook sentence ratio is lower than the boundary. |
+| `--verify-provider <name>` | `align --timed-text` | Disabled | Uses `local` or `modal` to transcribe distributed audio samples and verify that the SRT belongs to the selected audio. |
+| `--verification-samples <1-10>` | `align --timed-text` | `3` | Controls the number of distributed acoustic verification samples. |
 | `--output <path>` | `align`, `transcribe` | Derived beside the ebook or audio | Overrides the alignment or transcript output path. |
 | `--quality <preset>` | `align`, `transcribe` | `accurate` | Uses `accurate` or `fast` processing. |
 | `--language <locale>` | `align`, `transcribe` | Automatic | Sets the transcription and text-segmentation language. |
@@ -114,7 +178,7 @@ bun run honomiya validate book.honomiya.alignment.json --json
 
 | Result | Command | Default path | Contents |
 | --- | --- | --- | --- |
-| Read-and-listen manifest | `align` | `<ebook-stem>.honomiya.alignment.json` | Source identities and ordered sentence-to-audio cues using `honomiya.read-listen.v1`. |
+| Read-and-listen manifest | `align` | `<ebook-stem>.honomiya.alignment.json` | Transcription origin, source identities and ordered sentence-to-audio cues using `honomiya.read-listen.v1`. |
 | Alignment report | `align` | `<alignment-output>.report.json` | Revisions, settings, coverage, cue evidence and performance measurements. |
 | SubRip subtitles | `align --srt` | `<audio-stem>.honomiya.srt` | Ebook text with aligned timestamps. |
 | Reusable transcript | `transcribe` | `<audio-stem>.honomiya.transcript.json` | Provider provenance, speech regions, segments and word timestamps. |
@@ -126,8 +190,12 @@ bun run honomiya validate book.honomiya.alignment.json --json
   speech-aware interpolation.
 - `--quality fast` uses faster-whisper timestamps and conservative
   interpolation.
+- `--timed-text` bypasses transcription, defaults to conservative interpolation
+  and records the SRT hash, cue diagnostics, edition coverage gate and optional
+  acoustic verification evidence in the alignment report.
 - `--provider` is explicit so Honomiya never uploads audio or incurs provider
-  cost silently. `HONOMIYA_PROVIDER=modal` can set the default.
+  cost silently. `HONOMIYA_PROVIDER=local` or `HONOMIYA_PROVIDER=modal` can set
+  the default. The local provider never uploads audio.
 - For multi-track input, repeat `--audio` and `--transcript` in matching
   order. Partial transcript sets are rejected.
 - Completed chunks and remote job IDs are cached. Repeating the command resumes

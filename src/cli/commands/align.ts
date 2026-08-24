@@ -3,7 +3,7 @@ import { prepareProgressReporting } from "../progress";
 import type { CliContext } from "../types";
 
 export const ALIGN_USAGE =
-	"Usage: honomiya align --ebook <book.epub> --audio <track> [--audio <track> ...] (--provider <name> | --transcript <file> [--transcript <file> ...]) [--quality <accurate|fast>] [--output <alignment.json>] [--srt] [--language <locale>] [--cache-dir <path>] [--max-chunk-minutes <number>] [--chunk-overlap-seconds <number>] [--parallel-chunks <integer>] [--timestamp-backend <faster-whisper|stable-ts>] [--interpolation <off|conservative|complete>] [--retries <integer>] [--progress-json]\n";
+	"Usage: honomiya align --ebook <book.epub> --audio <track> [--audio <track> ...] (--provider <name> | --transcript <file> [--transcript <file> ...] | --timed-text <file.srt> [--timed-text <file.srt> ...]) [--verify-provider <local|modal>] [--verification-samples <1-10>] [--min-direct-coverage <0-1>] [--quality <accurate|fast>] [--output <alignment.json>] [--srt] [--language <locale>] [--cache-dir <path>] [--max-chunk-minutes <number>] [--chunk-overlap-seconds <number>] [--parallel-chunks <integer>] [--timestamp-backend <faster-whisper|stable-ts>] [--interpolation <off|conservative|complete>] [--retries <integer>] [--progress-json]\n";
 
 export async function runAlignCommand(
 	args: string[],

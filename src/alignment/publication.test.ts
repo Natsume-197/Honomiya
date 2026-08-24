@@ -189,6 +189,7 @@ describe("publication alignment", () => {
 		);
 
 		expect(result.manifest.cues).toHaveLength(2);
+		expect(result.manifest.transcription).toEqual({ origin: "honomiya" });
 		expect(result.manifest.sources.audioFiles[0]?.durationMs).toBe(2_000);
 		expect(result.report.transcription).toEqual({
 			mode: "provider",
@@ -260,8 +261,157 @@ describe("publication alignment", () => {
 
 		expect(readPath).toBe("/cache/track.json");
 		expect(result.report.transcription.mode).toBe("precomputed");
+		expect(result.manifest.transcription).toEqual({ origin: "honomiya" });
 		expect(result.manifest.cues).toHaveLength(2);
 		expect(closed).toBe(true);
+	});
+
+	test("aligns from SRT timed text without creating a provider", async () => {
+		let readPath = "";
+		let probedPath = "";
+		const result = await alignPublication(
+			{
+				ebookPath: "/books/book.epub",
+				audioPaths: ["/books/track.mp3"],
+				transcriptPaths: [],
+				timedTextPaths: ["/subs/track.srt"],
+				outputPath: "/output/alignment.json",
+			},
+			{
+				openEbook: async () => ebookDocument(() => undefined),
+				createProvider: () => {
+					throw new Error("must not create a provider");
+				},
+				transcribeAudio: async () => {
+					throw new Error("must not transcribe audio");
+				},
+				probeAudio: async (path) => {
+					probedPath = path;
+					return { durationMs: 2_000, chapters: [] };
+				},
+				hashFile: async (path) =>
+					path.endsWith(".epub")
+						? "a".repeat(64)
+						: path.endsWith(".srt")
+							? "c".repeat(64)
+							: "b".repeat(64),
+				readTranscript: async () => {
+					throw new Error("must not read a transcript");
+				},
+				readTimedText: async (path) => {
+					readPath = path;
+					return "1\n00:00:00,000 --> 00:00:02,000\nAlpha begins. Omega ends.\n";
+				},
+				now: () => new Date("2026-08-08T12:00:00.000Z"),
+			},
+		);
+
+		expect(readPath).toBe("/subs/track.srt");
+		expect(probedPath).toBe("/books/track.mp3");
+		expect(result.manifest.cues).toHaveLength(2);
+		expect(result.manifest.transcription).toEqual({ origin: "external" });
+		expect(result.report.parameters.interpolationMode).toBe("conservative");
+		expect(result.report.transcription).toMatchObject({
+			mode: "timed-text",
+			sources: [
+				{
+					audioFileIndex: 0,
+					provider: "timed-text",
+					model: "srt",
+				},
+			],
+			timedText: [
+				{
+					filename: "track.srt",
+					sha256: "c".repeat(64),
+					totalCues: 1,
+					usedCues: 1,
+					excludedCues: 0,
+				},
+			],
+		});
+	});
+
+	test("rejects timed text from an incompatible ebook edition", async () => {
+		await expect(
+			alignPublication(
+				{
+					ebookPath: "/books/book.epub",
+					audioPaths: ["/books/track.mp3"],
+					transcriptPaths: [],
+					timedTextPaths: ["/subs/track.srt"],
+					outputPath: "/output/alignment.json",
+					minDirectCoverage: 0.8,
+				},
+				{
+					openEbook: async () => ebookDocument(() => undefined),
+					createProvider: () => {
+						throw new Error("must not create a provider");
+					},
+					transcribeAudio: async () => {
+						throw new Error("must not transcribe audio");
+					},
+					probeAudio: async () => ({ durationMs: 2_000, chapters: [] }),
+					hashFile: async (path) =>
+						path.endsWith(".epub")
+							? "a".repeat(64)
+							: path.endsWith(".srt")
+								? "c".repeat(64)
+								: "b".repeat(64),
+					readTranscript: async () => undefined,
+					readTimedText: async () =>
+						"1\n00:00:00,000 --> 00:00:02,000\nCompletely different words.\n",
+					now: () => new Date("2026-08-08T12:00:00.000Z"),
+				},
+			),
+		).rejects.toThrow("may be different editions");
+	});
+
+	test("rejects timed text whose acoustic samples do not match the audio", async () => {
+		const verifierProvider: TranscriptionProvider = {
+			name: "local",
+			revision: "fixture-verifier-v1",
+			transcribe: async () => transcript(),
+		};
+		await expect(
+			alignPublication(
+				{
+					ebookPath: "/books/book.epub",
+					audioPaths: ["/books/track.mp3"],
+					transcriptPaths: [],
+					timedTextPaths: ["/subs/track.srt"],
+					outputPath: "/output/alignment.json",
+					verificationProvider: "local",
+				},
+				{
+					openEbook: async () => ebookDocument(() => undefined),
+					createProvider: () => verifierProvider,
+					transcribeAudio: async () => {
+						throw new Error("must not transcribe full audio");
+					},
+					probeAudio: async () => ({ durationMs: 2_000, chapters: [] }),
+					hashFile: async (path) =>
+						path.endsWith(".epub")
+							? "a".repeat(64)
+							: path.endsWith(".srt")
+								? "c".repeat(64)
+								: "b".repeat(64),
+					readTranscript: async () => undefined,
+					readTimedText: async () =>
+						"1\n00:00:00,000 --> 00:00:02,000\nAlpha begins. Omega ends.\n",
+					verifyTimedText: async () => ({
+						provider: { name: "local", revision: "fixture-verifier-v1" },
+						status: "failed",
+						confidence: "low",
+						averageScore: 0.1,
+						passingSamples: 0,
+						totalSamples: 1,
+						samples: [],
+					}),
+					now: () => new Date("2026-08-08T12:00:00.000Z"),
+				},
+			),
+		).rejects.toThrow("Timed-text verification failed");
 	});
 
 	test("rejects a transcript produced from different audio bytes", async () => {

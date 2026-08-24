@@ -5,7 +5,8 @@ function validManifest() {
 	return {
 		schema: HONOMIYA_MANIFEST_SCHEMA,
 		createdAt: "2026-08-08T15:00:00.000Z",
-		generator: { name: "honomiya", version: "0.1.0" },
+		generator: { name: "honomiya", version: "0.2.0" },
+		transcription: { origin: "honomiya" as const },
 		granularity: "sentence",
 		sources: {
 			ebook: { sha256: "a".repeat(64), filename: "book.epub" },
@@ -57,7 +58,24 @@ describe("Honomiya manifest v1", () => {
 		const manifest = parseHonomiyaManifest(validManifest());
 
 		expect(manifest.schema).toBe(HONOMIYA_MANIFEST_SCHEMA);
+		expect(manifest.transcription?.origin).toBe("honomiya");
 		expect(manifest.cues).toHaveLength(2);
+	});
+
+	test("keeps manifests created before embedded provenance compatible", () => {
+		const input = validManifest();
+		const { transcription: _transcription, ...legacyManifest } = input;
+
+		const manifest = parseHonomiyaManifest(legacyManifest);
+
+		expect(manifest.transcription).toBeUndefined();
+	});
+
+	test("rejects an unknown transcription origin", () => {
+		const input = validManifest() as Record<string, unknown>;
+		input.transcription = { origin: "guessed" };
+
+		expect(() => parseHonomiyaManifest(input)).toThrow();
 	});
 
 	test("rejects cues that reference a missing audio file", () => {

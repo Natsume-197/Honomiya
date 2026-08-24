@@ -19,6 +19,7 @@ export interface AlignOptions {
 	ebookPath: string;
 	audioPaths: string[];
 	transcriptPaths: string[];
+	timedTextPaths?: string[];
 	outputPath: string;
 	provider?: TranscriptionProviderName;
 	language?: string;
@@ -31,7 +32,12 @@ export interface AlignOptions {
 	timestampBackend?: TimestampBackend;
 	srt?: boolean;
 	quality?: QualityPreset;
+	minDirectCoverage?: number;
+	verificationProvider?: TranscriptionProviderName;
+	verificationSamples?: number;
 }
+
+export const DEFAULT_TIMED_TEXT_MIN_DIRECT_COVERAGE = 0.8;
 
 export const INTERPOLATION_MODES = ["off", "conservative", "complete"] as const;
 export type InterpolationMode = (typeof INTERPOLATION_MODES)[number];
@@ -51,6 +57,7 @@ interface MutableAlignOptions {
 	ebookPath?: string;
 	audioPaths: string[];
 	transcriptPaths: string[];
+	timedTextPaths: string[];
 	outputPath?: string;
 	provider?: string;
 	language?: string;
@@ -62,6 +69,9 @@ interface MutableAlignOptions {
 	interpolationMode?: string;
 	timestampBackend?: string;
 	quality?: string;
+	minDirectCoverage?: string;
+	verificationProvider?: string;
+	verificationSamples?: string;
 	srt: boolean;
 }
 
@@ -132,6 +142,7 @@ export function parseAlignOptions(
 	const parsed: MutableAlignOptions = {
 		audioPaths: [],
 		transcriptPaths: [],
+		timedTextPaths: [],
 		srt: false,
 	};
 
@@ -159,6 +170,9 @@ export function parseAlignOptions(
 				break;
 			case "--transcript":
 				parsed.transcriptPaths.push(value);
+				break;
+			case "--timed-text":
+				parsed.timedTextPaths.push(value);
 				break;
 			case "--output":
 				assignOnce(parsed, "outputPath", flag, value);
@@ -214,6 +228,24 @@ export function parseAlignOptions(
 			case "--quality":
 				assignOnce(parsed, "quality", flag, value);
 				break;
+			case "--min-direct-coverage":
+				if (parsed.minDirectCoverage !== undefined) {
+					throw new AlignOptionsError(`${flag} may only be provided once`);
+				}
+				parsed.minDirectCoverage = value;
+				break;
+			case "--verify-provider":
+				if (parsed.verificationProvider !== undefined) {
+					throw new AlignOptionsError(`${flag} may only be provided once`);
+				}
+				parsed.verificationProvider = value;
+				break;
+			case "--verification-samples":
+				if (parsed.verificationSamples !== undefined) {
+					throw new AlignOptionsError(`${flag} may only be provided once`);
+				}
+				parsed.verificationSamples = value;
+				break;
 			default:
 				throw new AlignOptionsError(`Unknown option: ${flag}`);
 		}
@@ -229,9 +261,12 @@ export function parseAlignOptions(
 		parsed.outputPath ?? defaultAlignmentOutputPath(parsed.ebookPath);
 	const resolvedOutput = resolve(outputPath);
 	if (
-		[parsed.ebookPath, ...parsed.audioPaths, ...parsed.transcriptPaths].some(
-			(path) => resolve(path) === resolvedOutput,
-		)
+		[
+			parsed.ebookPath,
+			...parsed.audioPaths,
+			...parsed.transcriptPaths,
+			...parsed.timedTextPaths,
+		].some((path) => resolve(path) === resolvedOutput)
 	) {
 		throw new AlignOptionsError("--output must not overwrite an input file");
 	}
@@ -244,19 +279,41 @@ export function parseAlignOptions(
 			"The number of --transcript and --audio values must match",
 		);
 	}
+	if (
+		parsed.timedTextPaths.length > 0 &&
+		parsed.timedTextPaths.length !== parsed.audioPaths.length
+	) {
+		throw new AlignOptionsError(
+			"The number of --timed-text and --audio values must match",
+		);
+	}
+	if (parsed.transcriptPaths.length > 0 && parsed.timedTextPaths.length > 0) {
+		throw new AlignOptionsError(
+			"--transcript cannot be combined with --timed-text",
+		);
+	}
 	if (parsed.transcriptPaths.length > 0 && parsed.provider) {
 		throw new AlignOptionsError(
 			"--provider cannot be combined with --transcript",
 		);
 	}
+	if (parsed.timedTextPaths.length > 0 && parsed.provider) {
+		throw new AlignOptionsError(
+			"--provider cannot be combined with --timed-text",
+		);
+	}
 
 	const provider =
-		parsed.transcriptPaths.length === 0
+		parsed.transcriptPaths.length === 0 && parsed.timedTextPaths.length === 0
 			? (parsed.provider ?? environment.HONOMIYA_PROVIDER)
 			: undefined;
-	if (parsed.transcriptPaths.length === 0 && !provider) {
+	if (
+		parsed.transcriptPaths.length === 0 &&
+		parsed.timedTextPaths.length === 0 &&
+		!provider
+	) {
 		throw new AlignOptionsError(
-			"--provider is required unless --transcript is provided (or set HONOMIYA_PROVIDER)",
+			"--provider is required unless --transcript or --timed-text is provided (or set HONOMIYA_PROVIDER)",
 		);
 	}
 	let validatedProvider: TranscriptionProviderName | undefined;
@@ -287,9 +344,12 @@ export function parseAlignOptions(
 			`Unsupported timestamp backend: ${parsed.timestampBackend}`,
 		);
 	}
-	if (parsed.transcriptPaths.length > 0 && parsed.timestampBackend) {
+	if (
+		(parsed.transcriptPaths.length > 0 || parsed.timedTextPaths.length > 0) &&
+		parsed.timestampBackend
+	) {
 		throw new AlignOptionsError(
-			"--timestamp-backend cannot be combined with --transcript",
+			"--timestamp-backend cannot be combined with --transcript or --timed-text",
 		);
 	}
 	const quality =
@@ -297,7 +357,50 @@ export function parseAlignOptions(
 	const qualitySettings = QUALITY_SETTINGS[quality];
 	const interpolationMode =
 		(parsed.interpolationMode as InterpolationMode | undefined) ??
-		qualitySettings.interpolationMode;
+		(parsed.timedTextPaths.length > 0
+			? "conservative"
+			: qualitySettings.interpolationMode);
+	if (parsed.timedTextPaths.length > 0 && interpolationMode === "complete") {
+		throw new AlignOptionsError(
+			"--interpolation complete is unavailable with --timed-text because SRT has no speech timeline",
+		);
+	}
+	if (parsed.verificationProvider !== undefined) {
+		if (parsed.timedTextPaths.length === 0) {
+			throw new AlignOptionsError("--verify-provider requires --timed-text");
+		}
+		if (!isTranscriptionProviderName(parsed.verificationProvider)) {
+			throw new AlignOptionsError(
+				`Unsupported verification provider: ${parsed.verificationProvider}`,
+			);
+		}
+	}
+	if (parsed.verificationSamples !== undefined) {
+		const samples = Number(parsed.verificationSamples);
+		if (!Number.isInteger(samples) || samples < 1 || samples > 10) {
+			throw new AlignOptionsError(
+				"--verification-samples must be an integer between 1 and 10",
+			);
+		}
+		if (!parsed.verificationProvider) {
+			throw new AlignOptionsError(
+				"--verification-samples requires --verify-provider",
+			);
+		}
+	}
+	let minDirectCoverage: number | undefined;
+	if (parsed.minDirectCoverage !== undefined) {
+		minDirectCoverage = Number(parsed.minDirectCoverage);
+		if (
+			!Number.isFinite(minDirectCoverage) ||
+			minDirectCoverage < 0 ||
+			minDirectCoverage > 1
+		) {
+			throw new AlignOptionsError(
+				"--min-direct-coverage must be a number between 0 and 1",
+			);
+		}
+	}
 	const timestampBackend =
 		(parsed.timestampBackend as TimestampBackend | undefined) ??
 		qualitySettings.timestampBackend;
@@ -306,11 +409,17 @@ export function parseAlignOptions(
 		ebookPath: parsed.ebookPath,
 		audioPaths: parsed.audioPaths,
 		transcriptPaths: parsed.transcriptPaths,
+		...(parsed.timedTextPaths.length > 0
+			? { timedTextPaths: parsed.timedTextPaths }
+			: {}),
 		outputPath,
 		quality,
 		...(validatedProvider ? { provider: validatedProvider } : {}),
 		interpolationMode,
-		...(parsed.transcriptPaths.length === 0 ? { timestampBackend } : {}),
+		...(parsed.transcriptPaths.length === 0 &&
+		parsed.timedTextPaths.length === 0
+			? { timestampBackend }
+			: {}),
 		language: parsed.language,
 		...(parsed.cacheDir ? { cacheDir: parsed.cacheDir } : {}),
 		...(parsed.maxChunkMinutes
@@ -328,5 +437,22 @@ export function parseAlignOptions(
 			? { parallelChunks: parseParallelChunks(parsed.parallelChunks) }
 			: {}),
 		...(parsed.srt ? { srt: true } : {}),
+		...(parsed.timedTextPaths.length > 0
+			? {
+					minDirectCoverage:
+						minDirectCoverage ?? DEFAULT_TIMED_TEXT_MIN_DIRECT_COVERAGE,
+				}
+			: minDirectCoverage === undefined
+				? {}
+				: { minDirectCoverage }),
+		...(parsed.verificationProvider
+			? {
+					verificationProvider:
+						parsed.verificationProvider as TranscriptionProviderName,
+				}
+			: {}),
+		...(parsed.verificationSamples
+			? { verificationSamples: Number(parsed.verificationSamples) }
+			: {}),
 	};
 }

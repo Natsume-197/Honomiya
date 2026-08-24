@@ -12,7 +12,7 @@ function progressMessage(progress: TranscriptionProgress): string {
 		case "cached":
 			return `${prefix}: cache hit`;
 		case "starting":
-			return `${prefix}: submitted to provider`;
+			return `${prefix}: starting transcription`;
 		case "resuming":
 			return `${prefix}: reattaching to pending provider job`;
 		case "retrying":

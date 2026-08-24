@@ -26,7 +26,8 @@ function validManifestJson() {
 	return JSON.stringify({
 		schema: HONOMIYA_MANIFEST_SCHEMA,
 		createdAt: "2026-08-08T15:00:00.000Z",
-		generator: { name: "honomiya", version: "0.1.0" },
+		generator: { name: "honomiya", version: "0.2.0" },
+		transcription: { origin: "external" },
 		granularity: "sentence",
 		sources: {
 			ebook: { sha256: "a".repeat(64) },
@@ -62,6 +63,7 @@ describe("Honomiya CLI", () => {
 		).toBe(0);
 		expect(JSON.parse(output.stdout())).toEqual({
 			schema: HONOMIYA_MANIFEST_SCHEMA,
+			transcriptionOrigin: "external",
 			granularity: "sentence",
 			audioFiles: 1,
 			cues: 0,
@@ -299,5 +301,44 @@ describe("Honomiya CLI", () => {
 			),
 		).toBe(0);
 		expect(transcriptPaths).toEqual(["track.json"]);
+	});
+
+	test("aligns from timed text without requiring a provider", async () => {
+		const output = createIO();
+		let timedTextPaths: string[] = [];
+		const commands: CliCommands = {
+			align: async (options) => {
+				timedTextPaths = options.timedTextPaths ?? [];
+				return {
+					bookSentences: 1,
+					directCues: 1,
+					interpolatedCues: 0,
+					unmatchedSentences: 0,
+					bookCoverage: 1,
+					directCoverage: 1,
+					unmatchedAudioFiles: [],
+					chapters: [],
+				};
+			},
+		};
+
+		expect(
+			await runCli(
+				[
+					"align",
+					"--ebook",
+					"book.epub",
+					"--audio",
+					"track.m4b",
+					"--timed-text",
+					"track.srt",
+				],
+				output.io,
+				commands,
+				{},
+			),
+		).toBe(0);
+		expect(timedTextPaths).toEqual(["track.srt"]);
+		expect(output.stdout()).toContain("Aligned 1/1 sentences");
 	});
 });
