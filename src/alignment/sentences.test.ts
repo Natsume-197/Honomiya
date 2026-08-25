@@ -227,6 +227,85 @@ describe("sentence-to-audio alignment", () => {
 		).toEqual([0, 0]);
 	});
 
+	test("maps adjacent sections whose chapter prefixes share boundary tokens", () => {
+		const result = alignSentencesToTranscripts(
+			[
+				sentenceWithTokens("first", "section-one", [
+					"alpha",
+					"opens",
+					"the",
+					"first",
+					"boundary",
+				]),
+				sentenceWithTokens("second", "section-two", [
+					"boundary",
+					"beta",
+					"opens",
+					"the",
+					"second",
+				]),
+			],
+			[
+				transcript([
+					"alpha",
+					"opens",
+					"the",
+					"first",
+					"boundary",
+					"beta",
+					"opens",
+					"the",
+					"second",
+				]),
+			],
+			"en",
+			{ interpolationMode: "off" },
+		);
+
+		expect(result.cues.map(({ cue }) => cue.id)).toEqual(["first", "second"]);
+		expect(result.report.unmatchedSentences).toBe(0);
+	});
+
+	test("recovers a short opening sentence before a shifted chapter anchor", () => {
+		const prelude = Array.from(
+			{ length: 70 },
+			(_, index) => `intro${alphabeticIndex(index)}`,
+		);
+		const body = Array.from({ length: 24 }, (_, index) =>
+			alphabeticIndex(index),
+		);
+		const result = alignSentencesToTranscripts(
+			[
+				sentenceWithTokens("heading", "section", [
+					"short",
+					"opening",
+					"title",
+					"here",
+				]),
+				sentenceWithTokens("body", "section", body),
+			],
+			[
+				transcript([
+					...prelude,
+					"short",
+					"opening",
+					"title",
+					"here",
+					...body.slice(0, 4),
+					"inserted",
+					"audio",
+					"words",
+					...body.slice(4),
+				]),
+			],
+			"en",
+			{ interpolationMode: "off" },
+		);
+
+		expect(result.cues.map(({ cue }) => cue.id)).toEqual(["heading", "body"]);
+		expect(result.report.unmatchedSentences).toBe(0);
+	});
+
 	test("splits overlapping ASR word boundaries between adjacent cues", () => {
 		const audio = transcript(["alpha", "begins", "omega", "ends"]);
 		const words = audio.segments[0]?.words;

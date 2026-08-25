@@ -9,6 +9,7 @@ const CHAPTER_PREFIX_TOKENS = 256;
 const MAX_AUDIO_INTRO_TOKENS = 64;
 const CHAPTER_NGRAM_SIZE = 5;
 const CHAPTER_VOTE_BIN_SIZE = 50;
+const MAX_CHAPTER_BOUNDARY_OVERLAP_TOKENS = 2;
 const MIN_CHAPTER_TOKENS = 4;
 const MIN_CHAPTER_SCORE = 0.4;
 const FINE_WINDOW_RATIO = 1.5;
@@ -23,6 +24,7 @@ export const ALIGNMENT_PARAMETERS = {
 	maxAudioIntroTokens: MAX_AUDIO_INTRO_TOKENS,
 	chapterNgramSize: CHAPTER_NGRAM_SIZE,
 	chapterVoteBinSize: CHAPTER_VOTE_BIN_SIZE,
+	maxChapterBoundaryOverlapTokens: MAX_CHAPTER_BOUNDARY_OVERLAP_TOKENS,
 	minChapterTokens: MIN_CHAPTER_TOKENS,
 	minChapterScore: MIN_CHAPTER_SCORE,
 	fineWindowRatio: FINE_WINDOW_RATIO,
@@ -343,6 +345,28 @@ function findChapterMatch(
 	return score >= bestPrefix.score ? { score, start: votedStart } : bestPrefix;
 }
 
+function openingSentenceAnchor(
+	chapter: ChapterText,
+	audio: AudioTranscript,
+	audioStart: number,
+): number {
+	const range = chapter.sentenceRanges[0];
+	if (!range) return audioStart;
+	const query = chapter.tokens.slice(range.start, range.end);
+	const minimumStart = Math.max(0, audioStart - FINE_ANCHOR_BACKTRACK_TOKENS);
+	for (let start = minimumStart; start < audioStart; start += 1) {
+		if (start + query.length <= audioStart) continue;
+		if (
+			query.every(
+				(value, offset) => audio.values[start + offset] === value,
+			)
+		) {
+			return start;
+		}
+	}
+	return audioStart;
+}
+
 function mapChapters(
 	chapters: ChapterText[],
 	audio: AudioTranscript[],
@@ -381,7 +405,10 @@ function mapChapters(
 		const occupied = occupiedPrefixes.get(candidate.audioIndex) ?? [];
 		if (
 			occupied.some(
-				(range) => candidate.start < range.end && prefixEnd > range.start,
+				(range) =>
+					Math.min(prefixEnd, range.end) -
+						Math.max(candidate.start, range.start) >
+					MAX_CHAPTER_BOUNDARY_OVERLAP_TOKENS,
 			)
 		) {
 			continue;
@@ -597,7 +624,7 @@ function alignChapter(
 			: Math.max(match.audioStart, audioCursor - FINE_ANCHOR_BACKTRACK_TOKENS);
 		const anchor =
 			windowIndex === 0
-				? match.audioStart
+				? openingSentenceAnchor(match.chapter, match.audio, match.audioStart)
 				: (voteForStart(
 						bookTokens.slice(0, CHAPTER_PREFIX_TOKENS),
 						match.audio,

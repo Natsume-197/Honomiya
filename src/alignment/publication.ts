@@ -57,7 +57,7 @@ import {
 } from "./sentences";
 import { TEXT_NORMALIZATION_VERSION } from "./text";
 
-export const ALIGNMENT_ALGORITHM_VERSION = "honomiya.align.v5" as const;
+export const ALIGNMENT_ALGORITHM_VERSION = "honomiya.align.v6" as const;
 
 export interface AlignmentExecutionReport {
 	algorithm: typeof ALIGNMENT_ALGORITHM_VERSION;
