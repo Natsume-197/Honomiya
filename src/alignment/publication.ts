@@ -2,7 +2,7 @@ import { basename, extname } from "node:path";
 import packageJson from "../../package.json" with { type: "json" };
 import {
 	HONOMIYA_MANIFEST_SCHEMA,
-	type HonomiyaManifestV1,
+	type HonomiyaManifest,
 	parseHonomiyaManifest,
 } from "../artifacts/manifest";
 import { type SubtitleCue, writeSrtArtifacts } from "../artifacts/srt";
@@ -56,19 +56,26 @@ import {
 	alignSentencesToTranscripts,
 } from "./sentences";
 import { TEXT_NORMALIZATION_VERSION } from "./text";
+import type { CtcAlignmentOptions } from "../ctc/align";
+import {
+	type CtcPublicationReport,
+	alignPublicationWithCtc,
+} from "../ctc/publication";
 
 export const ALIGNMENT_ALGORITHM_VERSION = "honomiya.align.v6" as const;
 
 export interface AlignmentExecutionReport {
 	algorithm: typeof ALIGNMENT_ALGORITHM_VERSION;
 	normalization: typeof TEXT_NORMALIZATION_VERSION;
-	parameters: typeof ALIGNMENT_PARAMETERS & {
-		quality: QualityPreset;
-		interpolationMode: InterpolationMode;
-		minDirectCoverage?: number;
-	};
+	parameters:
+		| (typeof ALIGNMENT_PARAMETERS & {
+				quality: QualityPreset;
+				interpolationMode: InterpolationMode;
+				minDirectCoverage?: number;
+		  })
+		| (CtcAlignmentOptions & { engine: "ctc"; minDirectCoverage?: number });
 	transcription: {
-		mode: "provider" | "precomputed" | "timed-text";
+		mode: "provider" | "precomputed" | "timed-text" | "ctc";
 		provider?: { name: string; revision: string };
 		sources: Array<{
 			audioFileIndex: number;
@@ -96,6 +103,8 @@ export interface AlignmentExecutionReport {
 		heapUsedBytes: number;
 	};
 	alignment: AlignmentReport;
+	/** Present when the CTC engine aligned the publication. */
+	ctc?: CtcPublicationReport;
 	cueEvidence: Array<{
 		cueId: string;
 		method: "direct" | "interpolated";
@@ -110,7 +119,7 @@ export interface AlignmentExecutionReport {
 }
 
 export interface PublicationAlignmentResult {
-	manifest: HonomiyaManifestV1;
+	manifest: HonomiyaManifest;
 	report: AlignmentExecutionReport;
 	subtitles: SubtitleCue[];
 }
@@ -160,6 +169,9 @@ export async function alignPublication(
 	dependencies: AlignPublicationDependencies = runtimeDependencies,
 	controls: TranscriptionControls = {},
 ): Promise<PublicationAlignmentResult> {
+	if (options.engine === "ctc") {
+		return alignPublicationWithCtc(options, undefined, controls);
+	}
 	const startedAt = performance.now();
 	const quality = options.quality ?? DEFAULT_QUALITY;
 	const qualitySettings = QUALITY_SETTINGS[quality];

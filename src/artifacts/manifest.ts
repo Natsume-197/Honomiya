@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const HONOMIYA_MANIFEST_SCHEMA = "honomiya.read-listen.v1" as const;
+export const HONOMIYA_MANIFEST_V2_SCHEMA = "honomiya.read-listen.v2" as const;
 
 const sha256Schema = z
 	.string()
@@ -55,7 +56,7 @@ export const readListenCueSchema = z
 		path: ["endMs"],
 	});
 
-export const honomiyaManifestV1Schema = z
+const manifestV1Object = z
 	.object({
 		schema: z.literal(HONOMIYA_MANIFEST_SCHEMA),
 		createdAt: z.iso.datetime({ offset: true }),
@@ -80,8 +81,69 @@ export const honomiyaManifestV1Schema = z
 			.strict(),
 		cues: z.array(readListenCueSchema),
 	})
+	.strict();
+
+const timedWordSchema = z
+	.object({
+		/** UTF-16 range of the word in the sentence's visible text. */
+		start: z.number().int().nonnegative(),
+		end: z.number().int().positive(),
+		text: z.string().min(1),
+		startMs: z.number().int().nonnegative(),
+		endMs: z.number().int().positive(),
+	})
 	.strict()
-	.superRefine((manifest, context) => {
+	.refine((word) => word.end > word.start && word.endMs > word.startMs, {
+		message: "Word ranges and times must be non-empty",
+	});
+
+export const readListenCueV2Schema = z
+	.object({
+		id: z.string().min(1),
+		text: z.discriminatedUnion("kind", [
+			fragmentAnchorSchema,
+			textQuoteAnchorSchema,
+		]),
+		audioFileIndex: z.number().int().nonnegative(),
+		startMs: z.number().int().nonnegative(),
+		endMs: z.number().int().positive(),
+		words: z.array(timedWordSchema).optional(),
+	})
+	.strict()
+	.refine((cue) => cue.endMs > cue.startMs, {
+		message: "endMs must be greater than startMs",
+		path: ["endMs"],
+	})
+	.superRefine((cue, context) => {
+		let previous: { end: number; endMs: number } | undefined;
+		for (const [position, word] of (cue.words ?? []).entries()) {
+			if (word.startMs < cue.startMs || word.endMs > cue.endMs) {
+				context.addIssue({
+					code: "custom",
+					message: "Word times must lie inside their cue",
+					path: ["words", position],
+				});
+			}
+			if (previous && (word.start < previous.end || word.startMs < previous.endMs)) {
+				context.addIssue({
+					code: "custom",
+					message: "Words must be ordered and must not overlap",
+					path: ["words", position],
+				});
+			}
+			previous = word;
+		}
+	});
+
+const manifestV2Object = manifestV1Object.extend({
+	schema: z.literal(HONOMIYA_MANIFEST_V2_SCHEMA),
+	granularity: z.enum(["sentence", "word"]),
+	cues: z.array(readListenCueV2Schema),
+});
+
+type ManifestShape = z.infer<typeof manifestV1Object> | z.infer<typeof manifestV2Object>;
+
+function checkManifestInvariants(manifest: ManifestShape, context: z.RefinementCtx): void {
 		const audioByIndex = new Map<
 			number,
 			(typeof manifest.sources.audioFiles)[number]
@@ -154,11 +216,34 @@ export const honomiyaManifestV1Schema = z
 
 			previous = cue;
 		}
-	});
+}
+
+export const honomiyaManifestV1Schema = manifestV1Object.superRefine(checkManifestInvariants);
+export const honomiyaManifestV2Schema = manifestV2Object.superRefine(checkManifestInvariants);
 
 export type HonomiyaManifestV1 = z.infer<typeof honomiyaManifestV1Schema>;
 export type ReadListenCue = z.infer<typeof readListenCueSchema>;
 
+export type HonomiyaManifestV2 = z.infer<typeof honomiyaManifestV2Schema>;
+export type ReadListenCueV2 = z.infer<typeof readListenCueV2Schema>;
+export type HonomiyaManifest = HonomiyaManifestV1 | HonomiyaManifestV2;
+
+/** Parses a v1 manifest only; use parseAnyHonomiyaManifest to accept v2. */
 export function parseHonomiyaManifest(input: unknown): HonomiyaManifestV1 {
 	return honomiyaManifestV1Schema.parse(input);
+}
+
+export function parseHonomiyaManifestV2(input: unknown): HonomiyaManifestV2 {
+	return honomiyaManifestV2Schema.parse(input);
+}
+
+/** Parses a v1 or v2 manifest, chosen by its `schema` field. */
+export function parseAnyHonomiyaManifest(input: unknown): HonomiyaManifest {
+	const schema =
+		typeof input === "object" && input !== null && "schema" in input
+			? (input as { schema: unknown }).schema
+			: undefined;
+	return schema === HONOMIYA_MANIFEST_V2_SCHEMA
+		? parseHonomiyaManifestV2(input)
+		: parseHonomiyaManifest(input);
 }

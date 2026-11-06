@@ -1,4 +1,6 @@
 import type { AlignmentReport } from "../alignment/sentences";
+import type { EmitCommandResult } from "../ctc/command";
+import type { EmitOptions } from "../options/emit";
 import type { AlignOptions } from "../options/align";
 import type { TranscribeOptions } from "../options/transcribe";
 import type { TranscriptionControls } from "../transcription/audio";
@@ -19,6 +21,10 @@ export interface CliCommands {
 		options: TranscribeOptions,
 		controls?: TranscriptionControls,
 	): Promise<TranscriptionCommandResult>;
+	emit?(
+		options: EmitOptions,
+		controls?: TranscriptionControls,
+	): Promise<EmitCommandResult>;
 }
 
 export interface CliContext {

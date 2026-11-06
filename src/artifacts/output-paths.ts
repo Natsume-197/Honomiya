@@ -11,3 +11,7 @@ export function defaultAlignmentOutputPath(ebookPath: string): string {
 export function defaultTranscriptOutputPath(audioPath: string): string {
 	return derivedPath(audioPath, "honomiya.transcript.json");
 }
+
+export function defaultEmissionsOutputPath(audioPath: string): string {
+	return derivedPath(audioPath, "honomiya.emissions.bin");
+}
