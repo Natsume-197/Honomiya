@@ -6,8 +6,8 @@ Reviewed 2026-11-06.
 
 | | |
 | --- | --- |
-| What Honomiya downloads | `model.onnx` and `vocab.txt` from the Storyteller project's GitLab model registry (package `quartznet15x5-ja` 1.0.0, created 2026-09-21) |
-| Licence stated by that registry | none (neither the package nor the project declares one) |
+| What Honomiya downloads today | an ONNX export of the model (`model.onnx`, `vocab.txt`) from an interim third-party model registry |
+| Licence stated by that registry | none |
 | Actual origin | [`kinouchi/japanese-quartznet-large`](https://huggingface.co/kinouchi/japanese-quartznet-large), a NeMo QuartzNet model published 2024-09-01 |
 | Licence of the origin | **Apache-2.0** |
 | Training data | [ReazonSpeech](https://huggingface.co/datasets/reazon-research/reazonspeech) "large" (about 5 000 h of Japanese broadcast audio) |
@@ -15,16 +15,12 @@ Reviewed 2026-11-06.
 
 ### How the origin was established
 
-- The `.nemo` checkpoint's 4 540 labels are identical to Storyteller's
+- The `.nemo` checkpoint's 4 540 labels are identical to the ONNX export's
   `vocab.txt`, in the same order. That order is shuffled, not sorted, so it
   works as a fingerprint.
 - Both models have the same architecture: QuartzNet with 18 blocks, kernels
   33 to 87 and a 1×1 classifier, and a 64-mel frontend with 20 ms windows and
   10 ms hops.
-- Storyteller's conversion script (`libraries/mlx-audio/scripts/convert.py`)
-  accepts `.nemo` checkpoints.
-- Storyteller's other QuartzNet languages come from OpenVoiceOS ONNX exports
-  on Hugging Face.
 
 ### What this means
 
@@ -39,9 +35,9 @@ Reviewed 2026-11-06.
 - **What the licence text leaves open:** whether a trained model counts as
   "Results". For self-hosted, personal use the residual risk is negligible.
   For a commercial product, ask a lawyer.
-- **The weak link is the download source, not the licence.** The Storyteller
+- **The weak link is the download source, not the licence.** The interim
   registry states no licence or attribution and could change or disappear.
-  The robust option is to fetch the `.nemo` from its author, convert it with
+  The plan is to fetch the `.nemo` from its author, convert it with
   Honomiya's own tooling, and host the ONNX (fp32 and int8) with the
   Apache-2.0 licence and an attribution notice.
 

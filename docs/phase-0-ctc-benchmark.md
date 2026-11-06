@@ -90,8 +90,8 @@ agreement figures, not absolute accuracy.
    descriptor and must be calibrated per model.
 3. The naive Viterbi runs at about 83 ns per cell. A whole book needs anchors
    between segments, a diagonal band and typed-array loops without per-frame
-   allocations. That is Phase 4 work; Storyteller reports about 4 ns per cell.
-4. The model weights come from the Storyteller project's model registry, and
+   allocations. That is Phase 4 work.
+4. The model weights come from a third-party model registry, and
    their licence must be confirmed before Honomiya downloads them by default.
 
 ## Reproducing

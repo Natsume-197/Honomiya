@@ -111,7 +111,7 @@ the share of sentences within 500 ms are unchanged: 94.4 % and 86.5 %.
 ## Remaining work
 
 - Phase 5: write word timings into a `read-listen.v2` manifest.
-- Re-align segments without dropped text (as Storyteller does). Not needed
+- Re-align segments without dropped text. Not needed
   yet, because no sentence was dropped in these books.
 - Viterbi speed is fine for now (about 2 to 6 s per book); profile it before
   any native port.

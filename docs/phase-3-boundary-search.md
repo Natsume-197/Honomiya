@@ -58,7 +58,7 @@ anchors are trustworthy segment boundaries; Phase 4 aligns between them.
   thinned to a few hundred tokens to bound memory, while staying short enough
   that a wrong anchor costs little.
 - Colophon-style sections (`p-credit`, `p-colophon`) could be excluded up
-  front, as Storyteller does with its exclusion rules.
+  front.
 
 ## Reproducing
 
