@@ -21,6 +21,7 @@ import {
 	type CtcAlignmentReport,
 	DEFAULT_CTC_ALIGNMENT_OPTIONS,
 	alignWithCtc,
+	currentTimingCorrection,
 } from "./align";
 import { type EmitAudioRequest, type EmitAudioResult, emitAudio } from "./emit";
 import { type CtcEmissions, decodeEmissions } from "./emissions";
@@ -148,7 +149,10 @@ export async function alignPublicationWithCtc(
 	const emissionMs = performance.now() - emissionStartedAt;
 
 	const alignmentStartedAt = performance.now();
-	const aligned = alignWithCtc(sentences, tracks, { locale: language });
+	const aligned = alignWithCtc(sentences, tracks, {
+		locale: language,
+		...(options.endPaddingMs === undefined ? {} : { alignment: { endPaddingMs: options.endPaddingMs } }),
+	});
 	const alignmentMs = performance.now() - alignmentStartedAt;
 	if (
 		options.minDirectCoverage !== undefined &&
@@ -196,6 +200,7 @@ export async function alignPublicationWithCtc(
 		parameters: {
 			engine: "ctc",
 			...DEFAULT_CTC_ALIGNMENT_OPTIONS,
+			...(options.endPaddingMs === undefined ? {} : { endPaddingMs: options.endPaddingMs }),
 			...(options.minDirectCoverage === undefined ? {} : { minDirectCoverage: options.minDirectCoverage }),
 		},
 		transcription: {
@@ -224,7 +229,7 @@ export async function alignPublicationWithCtc(
 			model: {
 				id: header.model.id,
 				revision: header.model.revision,
-				timingCorrectionMs: header.model.timingCorrectionMs,
+				timingCorrectionMs: currentTimingCorrection(header.model),
 			},
 			versions: { search: BOUNDARY_SEARCH_VERSION, text: TEXT_CONDITIONING_VERSION },
 			emission: emissionReports,

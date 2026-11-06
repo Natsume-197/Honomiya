@@ -17,6 +17,8 @@ export interface InstalledCtcModel {
 	directory: string;
 	modelPath: string;
 	vocabularyPath: string;
+	/** Mel frontend, for models whose input is features. */
+	frontendPath?: string;
 	precision?: CtcPrecision;
 }
 
@@ -65,12 +67,15 @@ export async function findInstalledModel(
 	const directory = modelDirectory(root, descriptor);
 	const modelPath = join(directory, descriptor.files.model.name);
 	const vocabularyPath = join(directory, descriptor.files.vocabulary.name);
+	const frontend = descriptor.files.frontend;
+	const frontendPath = frontend ? join(directory, frontend.name) : undefined;
 	const present = await Promise.all([
 		hasExpectedSize(modelPath, descriptor.files.model),
 		hasExpectedSize(vocabularyPath, descriptor.files.vocabulary),
+		frontend && frontendPath ? hasExpectedSize(frontendPath, frontend) : true,
 	]);
 	if (!present.every(Boolean)) return undefined;
-	return { descriptor, directory, modelPath, vocabularyPath };
+	return { descriptor, directory, modelPath, vocabularyPath, ...(frontendPath ? { frontendPath } : {}) };
 }
 
 /**
@@ -109,6 +114,9 @@ export async function findQuantizedModel(
 		directory,
 		modelPath,
 		vocabularyPath,
+		...(descriptor.files.frontend
+			? { frontendPath: join(directory, descriptor.files.frontend.name) }
+			: {}),
 		precision: "int8",
 	};
 }
@@ -229,7 +237,9 @@ export async function pullModel(
 ): Promise<InstalledCtcModel> {
 	const directory = modelDirectory(root, descriptor);
 	await mkdir(directory, { recursive: true });
-	for (const file of [descriptor.files.vocabulary, descriptor.files.model]) {
+	const files = [descriptor.files.vocabulary, descriptor.files.model];
+	if (descriptor.files.frontend) files.push(descriptor.files.frontend);
+	for (const file of files) {
 		const destination = join(directory, file.name);
 		if (await hasExpectedSize(destination, file)) continue;
 		await downloadVerified(

@@ -37,6 +37,12 @@ NORMALIZE_EPS = 1e-5
 PREEMPHASIS = 0.97
 
 
+def section(config: dict, key: str) -> dict:
+    """Config sections are flat in newer NeMo and nested under `params` in older checkpoints."""
+    value = config[key]
+    return value.get("params", value) if isinstance(value, dict) else value
+
+
 def read_nemo(path: pathlib.Path):
     with tarfile.open(path) as archive:
         members = {pathlib.PurePosixPath(m.name).name: m for m in archive.getmembers() if m.isfile()}
@@ -139,7 +145,7 @@ class Block(nn.Module):
 class QuartzNet(nn.Module):
     def __init__(self, config, weights):
         super().__init__()
-        pre = config["preprocessor"]
+        pre = section(config, "preprocessor")
         if pre.get("normalize") != "per_feature" or pre.get("features") != 64:
             raise SystemExit(f"Unsupported preprocessor: {pre}")
         hop = round(pre["window_stride"] * SAMPLE_RATE)
@@ -148,10 +154,11 @@ class QuartzNet(nn.Module):
         if window is None:
             window = torch.hann_window(round(pre["window_size"] * SAMPLE_RATE), periodic=False)
         self.frontend = MelFrontend(filterbank, window, pre["n_fft"], hop)
-        self.blocks = nn.Sequential(*[Block(weights, i, spec) for i, spec in enumerate(config["encoder"]["jasper"])])
+        jasper = section(config, "encoder")["jasper"]
+        self.blocks = nn.Sequential(*[Block(weights, i, spec) for i, spec in enumerate(jasper)])
         self.decoder = conv(weights["decoder.decoder_layers.0.weight"], 1, 1, 1, weights["decoder.decoder_layers.0.bias"])
         self.hop = hop
-        self.stride = math.prod(spec["stride"][0] for spec in config["encoder"]["jasper"])
+        self.stride = math.prod(spec["stride"][0] for spec in jasper)
 
     def forward(self, signal):
         logits = self.decoder(self.blocks(self.frontend(signal)))  # [B, C, T]
@@ -171,7 +178,7 @@ def main():
     args = parser.parse_args()
 
     config, weights = read_nemo(args.nemo)
-    labels = config.get("labels") or config["decoder"].get("vocabulary")
+    labels = config.get("labels") or section(config, "decoder").get("vocabulary")
     model = QuartzNet(config, weights).eval()
     classes = model.decoder.out_channels
     if classes != len(labels) + 1:

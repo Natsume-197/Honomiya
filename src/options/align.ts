@@ -47,6 +47,8 @@ export interface AlignOptions {
 	/** Write a `read-listen.v2` manifest with word timings (CTC only). */
 	words?: boolean;
 	precision?: CtcPrecision | "auto";
+	/** CTC only: how far each cue end may extend into following silence. */
+	endPaddingMs?: number;
 }
 
 export const ALIGN_ENGINES = ["whisper", "ctc"] as const;
@@ -92,6 +94,7 @@ interface MutableAlignOptions {
 	modelDir?: string;
 	threads?: string;
 	precision?: string;
+	endPaddingMs?: string;
 	emissionsPaths: string[];
 	srt: boolean;
 	words: boolean;
@@ -281,6 +284,7 @@ export function parseAlignOptions(
 			case "--model":
 			case "--model-dir":
 			case "--precision":
+			case "--end-padding-ms":
 			case "--threads": {
 				const key = (
 					{
@@ -288,6 +292,7 @@ export function parseAlignOptions(
 						"--model": "ctcModel",
 						"--model-dir": "modelDir",
 						"--precision": "precision",
+						"--end-padding-ms": "endPaddingMs",
 						"--threads": "threads",
 					} as const
 				)[flag];
@@ -368,6 +373,7 @@ export function parseAlignOptions(
 		["--model", parsed.ctcModel],
 		["--model-dir", parsed.modelDir],
 		["--precision", parsed.precision],
+		["--end-padding-ms", parsed.endPaddingMs],
 		["--threads", parsed.threads],
 	] as const) {
 		if (value !== undefined) throw new AlignOptionsError(`${flag} requires --engine ctc`);
@@ -571,6 +577,13 @@ function parseCtcAlignOptions(
 	) {
 		throw new AlignOptionsError(`Unsupported precision: ${parsed.precision}`);
 	}
+	let endPaddingMs: number | undefined;
+	if (parsed.endPaddingMs !== undefined) {
+		endPaddingMs = Number(parsed.endPaddingMs);
+		if (!Number.isInteger(endPaddingMs) || endPaddingMs < 0) {
+			throw new AlignOptionsError("--end-padding-ms must be a non-negative integer");
+		}
+	}
 	let threads: number | undefined;
 	if (parsed.threads !== undefined) {
 		threads = Number(parsed.threads);
@@ -603,6 +616,7 @@ function parseCtcAlignOptions(
 		...(parsed.srt ? { srt: true } : {}),
 		...(parsed.words ? { words: true } : {}),
 		...(parsed.precision ? { precision: parsed.precision as CtcPrecision | "auto" } : {}),
+		...(endPaddingMs === undefined ? {} : { endPaddingMs }),
 		...(minDirectCoverage === undefined ? {} : { minDirectCoverage }),
 	};
 }

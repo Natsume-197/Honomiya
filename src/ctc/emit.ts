@@ -80,7 +80,10 @@ const runtimeDependencies: EmitAudioDependencies = {
 	probe: probeAudio,
 	decode: decodePcm,
 	openModel: (model, threads) =>
-		openOnnxAcousticModel(model.modelPath, model.descriptor, { threads }),
+		openOnnxAcousticModel(model.modelPath, model.descriptor, {
+			threads,
+			...(model.frontendPath ? { frontendPath: model.frontendPath } : {}),
+		}),
 	readVocabulary: (path) => Bun.file(path).text(),
 	readCache: async (path) => {
 		const file = Bun.file(path);
@@ -139,6 +142,9 @@ export async function emitAudio(
 		await dependencies.readVocabulary(request.model.vocabularyPath),
 	);
 	const { samplesPerFrame, sampleRate } = descriptor;
+	const blankEquivalents = (descriptor.blankEquivalents ?? [])
+		.map((token) => vocabulary.tokens.indexOf(token))
+		.filter((classId) => classId >= 0);
 	const frameMs = (samplesPerFrame * 1_000) / sampleRate;
 	const totalFrames = Math.floor(probe.durationMs / frameMs);
 	const contextFrames = Math.round((descriptor.contextSeconds * 1_000) / frameMs);
@@ -256,7 +262,7 @@ export async function emitAudio(
 				pcm = padded;
 			}
 			model ??= await dependencies.openModel(request.model, threads);
-			const builder = new SparseEmissionsBuilder(topK, vocabulary.blank);
+			const builder = new SparseEmissionsBuilder(topK, vocabulary.blank, blankEquivalents);
 			const windows = planInferenceWindows({
 				spanStartFrame: chunk.decodeStartFrame,
 				spanSamples: expectedSamples,

@@ -94,3 +94,20 @@ describe("forcedAlign", () => {
 		);
 	});
 });
+
+describe("currentTimingCorrection", () => {
+	test("prefers the current calibration for the same model files", async () => {
+		const { currentTimingCorrection } = await import("./align");
+		const { CTC_MODELS } = await import("./models");
+		const ja = CTC_MODELS["quartznet15x5-ja"];
+		const stale = { start: 0, end: 0 };
+		expect(currentTimingCorrection({ id: ja.id, revision: ja.revision, timingCorrectionMs: stale })).toEqual(
+			ja.timingCorrectionMs,
+		);
+		expect(
+			currentTimingCorrection({ id: ja.id, revision: `${ja.revision}+int8.abc`, timingCorrectionMs: stale }),
+		).toEqual(ja.timingCorrectionMs);
+		expect(currentTimingCorrection({ id: ja.id, revision: "other", timingCorrectionMs: stale })).toEqual(stale);
+		expect(currentTimingCorrection({ id: "custom", revision: "x", timingCorrectionMs: stale })).toEqual(stale);
+	});
+});

@@ -93,12 +93,37 @@ describe("conditionText", () => {
 	});
 
 	test("keeps digits and offers a kanji numeral reading", () => {
-		const text = conditionText([{ text: "第13巻" }], VOCABULARY);
+		const text = conditionText([{ text: "第13巻" }], VOCABULARY, { locale: "ja" });
 		expect(classesOf(text, text.tokens)).toEqual(["*", "1|１", "3", "*"]);
 		expect(text.alternatives).toHaveLength(1);
 		expect(text.alternatives[0]).toMatchObject({ kind: "numeral", tokenStart: 1, tokenEnd: 3 });
 		expect(classesOf(text, text.alternatives[0]?.tokens ?? new Int32Array())).toEqual(["十", "三"]);
 		expect(text.stats.numeralRuns).toBe(1);
 		expect(id("十")).toBeGreaterThan(0);
+	});
+});
+
+describe("Latin-script models", () => {
+	// Lowercase letters and a word separator, no digits: like the English and
+	// Spanish QuartzNet vocabularies.
+	const LATIN = ["▁", ..."abcdefghijklmnopqrstuvwxyz", "'", "á", "é", "í", "ó", "ú", "ñ", "ü", "<blk>"];
+	const latin: CtcVocabulary = { tokens: LATIN, blank: LATIN.length - 1 };
+	const spell = (text: ReturnType<typeof conditionText>) =>
+		Array.from(text.tokens, (token) =>
+			token === STAR ? "*" : LATIN[text.classSets[token]?.[0] ?? -1],
+		).join("");
+
+	test("lowercases, keeps known accents and falls back to base letters", () => {
+		const text = conditionText([{ text: "Señor García, ¿Ça va?" }], latin, { locale: "es" });
+		expect(spell(text)).toBe("señorgarcíaçava".replace("ç", "c"));
+	});
+
+	test("spells numbers as words when the model has no digits", () => {
+		const es = conditionText([{ text: "Tenía 21 años en 1984." }], latin, { locale: "es" });
+		expect(spell(es)).toBe("teníaveintiunoañosenmilnovecientosochentaycuatro");
+		expect(es.alternatives).toEqual([]);
+		expect(Array.from(es.sourceStart).slice(5, 13).every((start) => start === 6)).toBe(true);
+		const en = conditionText([{ text: "In 1984, 305 men." }], latin, { locale: "en" });
+		expect(spell(en)).toBe("innineteeneightyfourthreehundredfivemen");
 	});
 });

@@ -6,7 +6,7 @@ Reviewed 2026-11-06.
 
 | | |
 | --- | --- |
-| What Honomiya downloads | its own conversion, from the GitHub release [`models-quartznet15x5-ja-v1`](https://github.com/Natsume-197/Honomiya/releases/tag/models-quartznet15x5-ja-v1): `model.onnx`, `model.int8.onnx`, `vocab.txt`, with `LICENSE`, `NOTICE`, a model card and `SHA256SUMS` |
+| What Honomiya downloads | its own conversion, from the GitHub release [`models-v1`](https://github.com/Natsume-197/Honomiya/releases/tag/models-v1): `quartznet15x5-ja.model.onnx`, `.model.int8.onnx`, `.vocab.txt`, with its `LICENSE.txt`, `NOTICE.txt`, model card and the release's `SHA256SUMS` |
 | Actual origin | [`kinouchi/japanese-quartznet-large`](https://huggingface.co/kinouchi/japanese-quartznet-large), a NeMo QuartzNet model published 2024-09-01 |
 | Licence of the origin | **Apache-2.0** |
 | Training data | [ReazonSpeech](https://huggingface.co/datasets/reazon-research/reazonspeech) "large" (about 5 000 h of Japanese broadcast audio) |
@@ -63,7 +63,7 @@ The two exports' frontends differ slightly: 90 % argmax agreement per frame
 on identical weights. Accuracy and timing are the same, so the existing
 timing correction (−1 228 / −762 ms) still applies.
 
-Published on 2026-11-06 as the GitHub release `models-quartznet15x5-ja-v1`.
+Published on 2026-11-06, first as `models-quartznet15x5-ja-v1`, then in the combined `models-v1` release (same files).
 `models pull quartznet15x5-ja` downloads and verifies `model.onnx`,
 `model.int8.onnx` and `vocab.txt`, so no installation needs Python. End to
 end on the Nanahoshi host, starting from an empty model directory:
@@ -72,10 +72,32 @@ end on the Nanahoshi host, starting from an empty model directory:
 - The aligner picked int8 automatically and finished in 74 s.
 - Recall was 100 %, with 94.4 % of sentences within 500 ms.
 
+## quartznet15x5-es and quartznet15x5-en
+
+| | |
+| --- | --- |
+| Origin | NVIDIA NeMo `stt_es_quartznet15x5` and `stt_en_quartznet15x5` (NGC, version 1.0.0rc1, published 2021-03-10) |
+| Licence | **CC-BY-4.0**, per NVIDIA's NeMo team (below) |
+| What Honomiya downloads | its own conversions, from the `models-v1` release, with `LICENSE.txt` (CC-BY-4.0), `NOTICE.txt` (attribution) and hashes |
+
+The NGC model cards say use is covered by the NGC Terms of Use "unless
+another License … is clearly specified". In the NeMo repository's
+discussion "Licence of pretrained models"
+([NVIDIA-NeMo/NeMo#1681](https://github.com/NVIDIA-NeMo/NeMo/discussions/1681)),
+NeMo maintainer Oleksii Kuchaiev answered in January 2021 and again in June
+2022 that, unless specified otherwise, NeMo models on NGC are under
+CC-BY-4.0. Both models predate both statements. NVIDIA's NeMo speech models
+published on Hugging Face also carry CC-BY-4.0.
+
+A 2024 comment in that thread says the NGC terms changed and asks whether
+the CC-BY default still holds; NVIDIA has not answered. Honomiya relies on
+the published statement, gives attribution to NVIDIA in every release, and
+would withdraw the files if NVIDIA stated otherwise.
+
 ## Other models considered
 
 | Model | Licence | Status |
 | --- | --- | --- |
 | MMS-300m forced aligner (Meta) | CC-BY-NC-4.0 | Not used: non-commercial and too slow on ARM |
-| OpenVoiceOS QuartzNet ONNX (en, de, es, fr, it, pl, ca, ru, pt, ar, hy, kk, fo, is) | CC-BY-4.0 | Candidates for other languages; attribution required |
+| OpenVoiceOS QuartzNet ONNX (en, de, es, fr, it, pl, ca, ru, pt, ar, hy, kk, fo, is) | labelled CC-BY-4.0 | Re-exports of NVIDIA and community checkpoints. Honomiya converts from the original checkpoints instead; their export is used only to cross-check conversions |
 | OpenVoiceOS QuartzNet Maltese (mt) | CC-BY-NC-SA-4.0 | Avoid: non-commercial |

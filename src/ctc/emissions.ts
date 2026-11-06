@@ -81,6 +81,13 @@ export function quantizeScore(logProbability: number): number {
 	return Math.min(0, Math.round(logProbability * SCORE_SCALE));
 }
 
+function logAddExp(a: number, b: number): number {
+	if (a === Number.NEGATIVE_INFINITY) return b;
+	if (b === Number.NEGATIVE_INFINITY) return a;
+	const max = Math.max(a, b);
+	return max + Math.log1p(Math.exp(-Math.abs(a - b)));
+}
+
 export function frameDurationMs(header: EmissionsHeader): number {
 	return (header.samplesPerFrame * 1_000) / header.sampleRate;
 }
@@ -96,9 +103,15 @@ export class SparseEmissionsBuilder {
 	private readonly bestIds: Int32Array;
 	private readonly bestScores: Float64Array;
 
+	/**
+	 * `blankEquivalents`: classes that count as silence for alignment (a
+	 * word-separator class). Their probability is added to the blank's and
+	 * they never appear among the top classes.
+	 */
 	constructor(
 		readonly topK: number,
 		readonly blank: number,
+		readonly blankEquivalents: readonly number[] = [],
 	) {
 		this.bestIds = new Int32Array(topK);
 		this.bestScores = new Float64Array(topK);
@@ -120,7 +133,7 @@ export class SparseEmissionsBuilder {
 			bestScores.fill(Number.NEGATIVE_INFINITY);
 			bestIds.fill(-1);
 			for (let k = 0; k < classes; k += 1) {
-				if (k === blank) continue;
+				if (k === blank || this.isBlankEquivalent(k)) continue;
 				const score = logProbabilities[offset + k] ?? Number.NEGATIVE_INFINITY;
 				if (score <= (bestScores[topK - 1] ?? Number.NEGATIVE_INFINITY)) {
 					continue;
@@ -134,12 +147,20 @@ export class SparseEmissionsBuilder {
 				bestScores[position] = score;
 				bestIds[position] = k;
 			}
-			this.blankScores.push(quantizeScore(logProbabilities[offset + blank] ?? -Infinity));
+			let blankScore = logProbabilities[offset + blank] ?? Number.NEGATIVE_INFINITY;
+			for (const equivalent of this.blankEquivalents) {
+				blankScore = logAddExp(blankScore, logProbabilities[offset + equivalent] ?? Number.NEGATIVE_INFINITY);
+			}
+			this.blankScores.push(quantizeScore(blankScore));
 			for (let position = 0; position < topK; position += 1) {
 				this.classIds.push(Math.max(0, bestIds[position] ?? 0));
 				this.classScores.push(quantizeScore(bestScores[position] ?? -Infinity));
 			}
 		}
+	}
+
+	private isBlankEquivalent(classId: number): boolean {
+		return this.blankEquivalents.length > 0 && this.blankEquivalents.includes(classId);
 	}
 
 	build(header: Omit<EmissionsHeader, "frames" | "topK" | "blank" | "scoreScale">): CtcEmissions {

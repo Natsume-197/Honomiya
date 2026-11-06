@@ -66,14 +66,22 @@ export function logSoftmaxRows(
 export async function openOnnxAcousticModel(
 	modelPath: string,
 	descriptor: CtcModelDescriptor,
-	options: { threads: number },
+	options: { threads: number; frontendPath?: string },
 ): Promise<AcousticModel> {
 	const ort = await loadOnnxRuntime();
-	const session = await ort.InferenceSession.create(modelPath, {
+	const sessionOptions = {
 		intraOpNumThreads: options.threads,
 		interOpNumThreads: 1,
-		graphOptimizationLevel: "all",
-	});
+		graphOptimizationLevel: "all" as const,
+	};
+	const session = await ort.InferenceSession.create(modelPath, sessionOptions);
+	if (descriptor.input === "features" && !options.frontendPath) {
+		throw new Error(`${descriptor.id} needs its mel frontend`);
+	}
+	const frontend =
+		descriptor.input === "features" && options.frontendPath
+			? await ort.InferenceSession.create(options.frontendPath, sessionOptions)
+			: undefined;
 	const inputName = session.inputNames[0];
 	const outputName = session.outputNames[0];
 	if (!inputName || !outputName) {
@@ -82,13 +90,21 @@ export async function openOnnxAcousticModel(
 
 	return {
 		async run(samples) {
-			const tensor =
-				descriptor.input === "signal"
-					? new ort.Tensor("float32", samples, [1, 1, samples.length])
-					: new ort.Tensor("float32", normalizeWaveform(samples), [
-							1,
-							samples.length,
-						]);
+			let tensor: InstanceType<typeof ort.Tensor>;
+			if (frontend) {
+				const features = (
+					await frontend.run({
+						[frontend.inputNames[0] ?? "signal"]: new ort.Tensor("float32", samples, [1, 1, samples.length]),
+					})
+				)[frontend.outputNames[0] ?? "features"];
+				if (!features) throw new Error("The mel frontend returned no features");
+				tensor = features as InstanceType<typeof ort.Tensor>;
+			} else {
+				tensor =
+					descriptor.input === "signal"
+						? new ort.Tensor("float32", samples, [1, 1, samples.length])
+						: new ort.Tensor("float32", normalizeWaveform(samples), [1, samples.length]);
+			}
 			const output = (await session.run({ [inputName]: tensor }))[outputName];
 			if (!output || output.type !== "float32" || output.dims.length !== 3) {
 				throw new Error(`${modelPath} did not return [batch, frames, classes]`);
@@ -103,6 +119,7 @@ export async function openOnnxAcousticModel(
 		},
 		async close() {
 			await session.release();
+			await frontend?.release();
 		},
 	};
 }

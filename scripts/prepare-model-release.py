@@ -6,7 +6,7 @@
         --metrics metrics.json
 
 Copies the model files and writes README.md (model card), LICENSE (the
-upstream Apache-2.0 text) and NOTICE (attribution), plus SHA256SUMS. The
+upstream licence text) and NOTICE (attribution), plus SHA256SUMS. The
 folder can then be uploaded as is, for example to a Hugging Face model
 repository.
 """
@@ -19,6 +19,8 @@ import shutil
 import urllib.request
 
 APACHE_LICENSE_URL = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+CC_BY_4_URL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
+LICENCE_NAMES = {"apache-2.0": "Apache License 2.0", "cc-by-4.0": "Creative Commons Attribution 4.0 International"}
 
 UPSTREAM = {
     "quartznet15x5-ja": {
@@ -35,6 +37,23 @@ UPSTREAM = {
             "used solely for the purposes of Article 30-4 of the Japanese Copyright Act. That condition binds "
             "users of the corpus; CDLA-Sharing-1.0 §3.5 places no restrictions on the publication of Results."
         ),
+    },
+    **{
+        f"quartznet15x5-{code}": {
+            "language": code,
+            "title": f"QuartzNet 15x5 {name} (ONNX) for Honomiya",
+            "upstream": f"nvidia/stt_{code}_quartznet15x5",
+            "upstream_url": f"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/stt_{code}_quartznet15x5",
+            "upstream_author": "NVIDIA",
+            "licence": "cc-by-4.0",
+            "dataset": "",
+            "dataset_note": (
+                "see the upstream NGC model card. Licence: NVIDIA's NeMo team stated that NeMo models on NGC are "
+                "under CC-BY-4.0 unless a model card specifies otherwise "
+                "(https://github.com/NVIDIA-NeMo/NeMo/discussions/1681)."
+            ),
+        }
+        for code, name in (("es", "Spanish"), ("en", "English"))
     },
 }
 
@@ -63,12 +82,14 @@ def main() -> None:
     for name, source in files.items():
         shutil.copyfile(source, args.out / name)
 
-    with urllib.request.urlopen(APACHE_LICENSE_URL, timeout=60) as response:
+    licence_url = APACHE_LICENSE_URL if info["licence"] == "apache-2.0" else CC_BY_4_URL
+    request = urllib.request.Request(licence_url, headers={"User-Agent": "honomiya-release-script"})
+    with urllib.request.urlopen(request, timeout=60) as response:
         (args.out / "LICENSE").write_bytes(response.read())
     (args.out / "NOTICE").write_text(
         f"{info['title']}\n\n"
         f"Converted from {info['upstream']} by {info['upstream_author']},\n"
-        f"{info['upstream_url']}, licensed under the Apache License 2.0.\n\n"
+        f"{info['upstream_url']}, licensed under the {LICENCE_NAMES[info['licence']]}.\n\n"
         "Changes: the NeMo checkpoint was rebuilt in PyTorch and exported to ONNX with the mel frontend\n"
         "inside the graph (scripts/convert-nemo-quartznet.py in Honomiya). model.int8.onnx is a static\n"
         "int8 quantization of model.onnx (scripts/quantize-ctc-model.py). The weights were not retrained.\n",
@@ -89,9 +110,7 @@ license: {info['licence']}
 library_name: onnx
 pipeline_tag: automatic-speech-recognition
 base_model: {info['upstream']}
-datasets:
-- {info['dataset']}
-tags:
+{"datasets:" + chr(10) + "- " + info["dataset"] + chr(10) if info["dataset"] else ""}tags:
 - ctc
 - quartznet
 - forced-alignment
@@ -129,10 +148,10 @@ On ARM CPUs with dot-product instructions it runs about twice as fast as
 ## Provenance and licence
 
 - Upstream: [{info['upstream']}]({info['upstream_url']}) by {info['upstream_author']},
-  Apache-2.0. Upstream checkpoint SHA-256:
+  {info['licence']}. Upstream checkpoint SHA-256:
   `{sha256(args.nemo)}`.
-- This repository: the same weights, converted, under the same
-  **Apache License 2.0** (see `LICENSE` and `NOTICE`).
+- This release: the same weights, converted, under the same
+  **{LICENCE_NAMES[info['licence']]}** (see `LICENSE` and `NOTICE`).
 - Training data: {info['dataset_note']}
 """
     (args.out / "README.md").write_text(card, encoding="utf-8")

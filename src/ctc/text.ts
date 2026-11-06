@@ -1,4 +1,5 @@
 import type { RubySpan } from "../alignment/ebook-text";
+import { englishNumber, spanishNumber } from "./numerals";
 import type { CtcVocabulary } from "./vocabulary";
 
 /**
@@ -183,9 +184,16 @@ export class VocabularyIndex {
 			if (counterpart) forms.add(counterpart);
 		};
 		add(character);
+		add(character.toLowerCase());
 		add(GLYPH_VARIANTS[character]);
 		if (options.smallKana) add(SMALL_KANA[character]);
-		const classIds = [...forms].flatMap((form) => this.byForm.get(form) ?? []);
+		let classIds = [...forms].flatMap((form) => this.byForm.get(form) ?? []);
+		if (classIds.length === 0) {
+			// A Latin letter with a diacritic the model lacks: use its base
+			// letter (ç → c, ã → a).
+			const base = character.toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "");
+			if (base.length === 1 && base !== character) classIds = this.byForm.get(base) ?? [];
+		}
 		const id = this.setId(classIds);
 		this.cache.set(cacheKey, id);
 		return id;
@@ -228,6 +236,15 @@ function createWordSegmenter(locale?: string): Intl.Segmenter {
 	}
 }
 
+/** How a digit run is narrated in a language, or undefined if unknown. */
+export function spokenNumber(digits: string, locale: string | undefined): string | undefined {
+	const language = locale?.toLowerCase().split(/[-_]/u)[0];
+	if (language === "ja") return kanjiNumeral(digits);
+	if (language === "es") return spanishNumber(digits);
+	if (language === "en") return englishNumber(digits);
+	return undefined;
+}
+
 export function conditionText(
 	sentences: ConditionableSentence[],
 	vocabulary: CtcVocabulary | VocabularyIndex,
@@ -235,6 +252,9 @@ export function conditionText(
 ): ConditionedText {
 	const index =
 		vocabulary instanceof VocabularyIndex ? vocabulary : new VocabularyIndex(vocabulary);
+	// Models trained on normalized text (no digit classes) hear numbers as
+	// words, so spelled-out numbers become the primary tokens.
+	const digitsInVocabulary = index.tokenFor("1") !== STAR;
 	const segmenter = createWordSegmenter(options.locale);
 	const tokens: number[] = [];
 	const sentenceOf: number[] = [];
@@ -279,23 +299,37 @@ export function conditionText(
 			// A run of digits: narrated as a number, written as digits.
 			if (DIGIT.test(normalized)) {
 				const firstToken = tokens.length;
+				const run: CodePoint[] = [];
 				let digits = "";
 				while (position < points.length) {
 					const current = points[position] as CodePoint;
 					const digit = current.text.normalize("NFKC");
 					if (!DIGIT.test(digit)) break;
 					digits += digit;
-					stats.characters += 1;
-					push(index.tokenFor(digit), current.start, current.end);
+					run.push(current);
 					position += 1;
 				}
+				stats.characters += run.length;
 				stats.numeralRuns += 1;
-				alternatives.push({
-					kind: "numeral",
-					tokenStart: firstToken,
-					tokenEnd: tokens.length,
-					tokens: Int32Array.from(index.tokensFor(kanjiNumeral(digits))),
-				});
+				const spoken = spokenNumber(digits, options.locale);
+				const runStart = run[0]?.start ?? point.start;
+				const runEnd = run.at(-1)?.end ?? point.end;
+				if (!digitsInVocabulary && spoken) {
+					for (const token of index.tokensFor(spoken)) push(token, runStart, runEnd);
+					continue;
+				}
+				for (const [offset, digit] of Array.from(digits).entries()) {
+					const current = run[offset] as CodePoint;
+					push(index.tokenFor(digit), current.start, current.end);
+				}
+				if (spoken) {
+					alternatives.push({
+						kind: "numeral",
+						tokenStart: firstToken,
+						tokenEnd: tokens.length,
+						tokens: Int32Array.from(index.tokensFor(spoken)),
+					});
+				}
 				continue;
 			}
 

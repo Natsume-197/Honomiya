@@ -144,9 +144,12 @@ character probabilities as a reusable `honomiya.emissions.v1` file. It is the
 first stage of the upcoming CTC forced aligner, runs on the CPU through
 `onnxruntime-node` and needs neither Python nor a remote provider.
 
-Download the model once. `quartznet15x5-ja` covers Japanese: Honomiya's own
-conversion of an Apache-2.0 model (see `docs/model-licences.md`), published as
-a GitHub release and verified by SHA-256 after download. It includes an int8
+Download the model for your language once: `quartznet15x5-ja` (Japanese),
+`quartznet15x5-es` (Spanish) or `quartznet15x5-en` (English). `align` picks
+the model from the ebook's language. The Japanese model is Honomiya's own conversion of
+an Apache-2.0 model; Spanish and English are converted from NVIDIA's CC-BY-4.0
+NeMo models (see `docs/model-licences.md`). All are published in the
+`models-v1` GitHub release and verified by SHA-256 after download. It includes an int8
 variant (about twice as fast on ARM CPUs, same accuracy) that `emit` and
 `align --engine ctc` use by default:
 

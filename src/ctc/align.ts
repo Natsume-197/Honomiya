@@ -14,6 +14,7 @@ import {
 	locateChapters,
 	trackFrame,
 } from "./search";
+import { CTC_MODELS, isCtcModelId } from "./models";
 import { type ConditionedText, conditionText, VocabularyIndex } from "./text";
 import { EmissionReader, forcedAlign, segmentScores } from "./viterbi";
 
@@ -118,7 +119,7 @@ export function alignWithCtc(
 		}
 	}
 	const frameMs = frameDurationMs(header);
-	const correction = header.model.timingCorrectionMs;
+	const correction = currentTimingCorrection(header.model);
 	const index = new VocabularyIndex({ tokens: header.vocabulary, blank: header.blank });
 
 	const conditionStarted = performance.now();
@@ -128,7 +129,11 @@ export function alignWithCtc(
 	const searchStarted = performance.now();
 	const spans = chapterSpans(text, (sentence) => sentences[sentence]?.sectionRef ?? "");
 	const decode = decodeForSearch(tracks, index);
-	const locations = locateChapters(text, spans, decode, DEFAULT_BOUNDARY_SEARCH_OPTIONS);
+	const ngram = isCtcModelId(header.model.id) ? CTC_MODELS[header.model.id].searchNgram : undefined;
+	const locations = locateChapters(text, spans, decode, {
+		...DEFAULT_BOUNDARY_SEARCH_OPTIONS,
+		...(ngram ? { ngram } : {}),
+	});
 	const searchMs = performance.now() - searchStarted;
 
 	// Forced alignment, segment by segment.
@@ -502,4 +507,23 @@ export function padCueEnds(
 		if (lastWord && lastWord.endMs === cue.endMs) lastWord.endMs = endMs;
 		cue.endMs = endMs;
 	}
+}
+
+/**
+ * The timing correction to apply. Emissions record the correction their
+ * model had when they were computed, but calibration can change later while
+ * the weights stay the same, so a known model's current correction wins when
+ * the emissions come from that model's files (same revision, or an int8
+ * variant of it).
+ */
+export function currentTimingCorrection(model: {
+	id: string;
+	revision: string;
+	timingCorrectionMs: { start: number; end: number };
+}): { start: number; end: number } {
+	if (!isCtcModelId(model.id)) return model.timingCorrectionMs;
+	const descriptor = CTC_MODELS[model.id];
+	const sameFiles =
+		model.revision === descriptor.revision || model.revision.startsWith(`${descriptor.revision}+`);
+	return sameFiles ? descriptor.timingCorrectionMs : model.timingCorrectionMs;
 }
