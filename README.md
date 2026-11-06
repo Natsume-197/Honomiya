@@ -144,8 +144,11 @@ character probabilities as a reusable `honomiya.emissions.v1` file. It is the
 first stage of the upcoming CTC forced aligner, runs on the CPU through
 `onnxruntime-node` and needs neither Python nor a remote provider.
 
-Download the model once. `quartznet15x5-ja` covers Japanese, about 91 MiB of
-third-party weights, verified by SHA-256 after download:
+Download the model once. `quartznet15x5-ja` covers Japanese: Honomiya's own
+conversion of an Apache-2.0 model (see `docs/model-licences.md`), published as
+a GitHub release and verified by SHA-256 after download. It includes an int8
+variant (about twice as fast on ARM CPUs, same accuracy) that `emit` and
+`align --engine ctc` use by default:
 
 ```bash
 bun run honomiya models pull quartznet15x5-ja
@@ -174,11 +177,9 @@ and report as the transcript engine. Add `--words` to write a
 `honomiya.read-listen.v2` manifest whose cues also carry word timings that
 tile each sentence; `validate` and `compare` accept both versions.
 
-On ARM CPUs an int8 variant runs about twice as fast with the same alignment
-accuracy. Quantize your copy once with `scripts/quantize-ctc-model.py` (needs
-Python with `onnxruntime`, `onnx` and `numpy`) and register it with
-`honomiya models import quartznet15x5-ja --int8 model.int8.onnx`; `emit` and
-`align --engine ctc` then use it unless `--precision fp32` is given.
+Pass `--precision fp32` to use the fp32 model instead. To use your own
+quantization, build it with `scripts/quantize-ctc-model.py` and register it
+with `honomiya models import quartznet15x5-ja --int8 model.int8.onnx`.
 
 Models are stored in `HONOMIYA_MODEL_DIR`, or in the user cache directory by
 default. Completed five-minute chunks are cached, so an interrupted run resumes.

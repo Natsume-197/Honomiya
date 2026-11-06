@@ -47,14 +47,14 @@ export interface CtcModelDescriptor {
 	licenseNote: string;
 }
 
-/** Interim third-party ONNX export, until a self-hosted conversion replaces it. */
-const INTERIM_ONNX_SOURCE =
-	"https://gitlab.com/api/v4/projects/67994333/packages/ml_models/3023444/files";
+/** Honomiya's own conversion, published as a GitHub release (Apache-2.0). */
+const QUARTZNET_JA_RELEASE =
+	"https://github.com/Natsume-197/Honomiya/releases/download/models-quartznet15x5-ja-v1";
 
 export const CTC_MODELS: Record<CtcModelId, CtcModelDescriptor> = {
 	"quartznet15x5-ja": {
 		id: "quartznet15x5-ja",
-		revision: "quartznet15x5-ja.onnx-fp32.1",
+		revision: "quartznet15x5-ja.v1",
 		input: "signal",
 		languages: ["ja"],
 		sampleRate: 16_000,
@@ -67,25 +67,32 @@ export const CTC_MODELS: Record<CtcModelId, CtcModelDescriptor> = {
 		files: {
 			model: {
 				name: "model.onnx",
-				url: `${INTERIM_ONNX_SOURCE}/model.onnx`,
-				bytes: 95_210_887,
+				url: `${QUARTZNET_JA_RELEASE}/model.onnx`,
+				bytes: 95_235_492,
 				sha256:
-					"9d8f341073fa23feead84269c2b3fd77f754ac7f33b339e56883aba503f2ab30",
+					"7afc3d1df40008333235c4038b138f4d86942a07c260473a90cbbe7f9d98dab9",
 			},
 			vocabulary: {
 				name: "vocab.txt",
-				url: `${INTERIM_ONNX_SOURCE}/vocab.txt`,
+				url: `${QUARTZNET_JA_RELEASE}/vocab.txt`,
 				bytes: 39_723,
 				sha256:
 					"6277f3a0cedd93b6a22c35ea6b6ba1c6e12d5d21ca1f85fb8ebb064cc7b82daf",
 			},
+			modelInt8: {
+				name: "model.int8.onnx",
+				url: `${QUARTZNET_JA_RELEASE}/model.int8.onnx`,
+				bytes: 39_750_265,
+				sha256:
+					"84df51eb3744ded8c3de9b2793737c8e02ada1ee50035036044645b129d845aa",
+			},
 		},
-		// Provenance verified 2026-11-06: identical 4 540-label vocabulary (same
-		// shuffled order) and architecture as kinouchi/japanese-quartznet-large,
-		// an Apache-2.0 NeMo model trained on ReazonSpeech. The ONNX export is
-		// downloaded from an interim third-party model registry.
+		// Converted by scripts/convert-nemo-quartznet.py from
+		// kinouchi/japanese-quartznet-large (Apache-2.0, trained on ReazonSpeech);
+		// the int8 file comes from scripts/quantize-ctc-model.py. See
+		// docs/model-licences.md.
 		source:
-			"kinouchi/japanese-quartznet-large (huggingface.co), interim ONNX export from a third-party model registry",
+			"Honomiya release models-quartznet15x5-ja-v1, converted from kinouchi/japanese-quartznet-large (huggingface.co)",
 		licenseNote:
 			"Weights: Apache-2.0 (kinouchi/japanese-quartznet-large). Trained on ReazonSpeech (CDLA-Sharing-1.0, Japanese Copyright Act art. 30-4).",
 	},
