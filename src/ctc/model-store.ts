@@ -224,10 +224,9 @@ export async function pullModel(
 		fetch?: typeof fetch;
 		onProgress?: (progress: PullProgress) => void;
 		signal?: AbortSignal;
+		now?: () => Date;
 	} = {},
 ): Promise<InstalledCtcModel> {
-	const existing = await findInstalledModel(descriptor, root);
-	if (existing) return existing;
 	const directory = modelDirectory(root, descriptor);
 	await mkdir(directory, { recursive: true });
 	for (const file of [descriptor.files.vocabulary, descriptor.files.model]) {
@@ -240,6 +239,25 @@ export async function pullModel(
 			options.onProgress,
 			options.signal,
 		);
+	}
+	const int8 = descriptor.files.modelInt8;
+	if (int8 && !(await hasExpectedSize(join(directory, INT8_MODEL_FILE), int8))) {
+		await downloadVerified(
+			int8,
+			join(directory, INT8_MODEL_FILE),
+			options.fetch ?? fetch,
+			options.onProgress,
+			options.signal,
+		);
+		const sidecar: VariantSidecar = {
+			schema: VARIANT_SCHEMA,
+			precision: "int8",
+			sha256: int8.sha256,
+			bytes: int8.bytes,
+			source: int8.url,
+			importedAt: (options.now ?? (() => new Date()))().toISOString(),
+		};
+		await Bun.write(join(directory, INT8_SIDECAR_FILE), `${JSON.stringify(sidecar, null, 2)}\n`);
 	}
 	return requireInstalledModel(descriptor, root);
 }

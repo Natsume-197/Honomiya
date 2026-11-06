@@ -60,3 +60,36 @@ describe("model store precision", () => {
 		await expect(importQuantizedModel(descriptor, root, source)).rejects.toThrow(/models pull/);
 	});
 });
+
+describe("pullModel", () => {
+	test("downloads and verifies a published int8 variant", async () => {
+		const { createHash } = await import("node:crypto");
+		const { pullModel } = await import("./model-store");
+		const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+		const bodies: Record<string, string> = {
+			"https://example.invalid/v": VOCABULARY,
+			"https://example.invalid/m": WEIGHTS,
+			"https://example.invalid/i": "int8-weights",
+		};
+		const published: CtcModelDescriptor = {
+			...descriptor,
+			files: {
+				model: { ...descriptor.files.model, sha256: digest(WEIGHTS) },
+				vocabulary: { ...descriptor.files.vocabulary, sha256: digest(VOCABULARY) },
+				modelInt8: {
+					name: "model.int8.onnx",
+					url: "https://example.invalid/i",
+					bytes: "int8-weights".length,
+					sha256: digest("int8-weights"),
+				},
+			},
+		};
+		root = await mkdtemp(join(tmpdir(), "honomiya-models-"));
+		const fakeFetch = (async (url: string) => new Response(bodies[url] ?? "", { status: bodies[url] ? 200 : 404 })) as unknown as typeof fetch;
+		const installed = await pullModel(published, root, { fetch: fakeFetch, now: () => new Date(0) });
+		expect(installed.precision).toBe("fp32");
+		const auto = await requireInstalledModel(published, root, "auto");
+		expect(auto.precision).toBe("int8");
+		expect(auto.descriptor.revision).toBe(`test.1+int8.${digest("int8-weights").slice(0, 12)}`);
+	});
+});

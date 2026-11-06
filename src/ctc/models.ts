@@ -37,7 +37,12 @@ export interface CtcModelDescriptor {
 	 * raw token start and end times.
 	 */
 	timingCorrectionMs: { start: number; end: number };
-	files: { model: CtcModelFile; vocabulary: CtcModelFile };
+	files: {
+		model: CtcModelFile;
+		vocabulary: CtcModelFile;
+		/** Published int8 variant; `models pull` installs it when present. */
+		modelInt8?: CtcModelFile;
+	};
 	source: string;
 	licenseNote: string;
 }
