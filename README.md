@@ -139,6 +139,9 @@ and may incur provider cost. `local` keeps them on the machine.
 
 ### CTC emissions (experimental)
 
+See [docs/ctc-engine.md](docs/ctc-engine.md) for how the engine works, its
+models, how to add a language and how it was validated.
+
 `emit` runs a CTC acoustic model over an audiobook and stores its per-frame
 character probabilities as a reusable `honomiya.emissions.v1` file. It is the
 first stage of the upcoming CTC forced aligner, runs on the CPU through
