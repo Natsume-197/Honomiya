@@ -137,6 +137,59 @@ bun run honomiya align \
 Sample verification is explicit because `modal` uploads the extracted samples
 and may incur provider cost. `local` keeps them on the machine.
 
+### CTC emissions (experimental)
+
+`emit` runs a CTC acoustic model over an audiobook and stores its per-frame
+character probabilities as a reusable `honomiya.emissions.v1` file. It is the
+first stage of the upcoming CTC forced aligner, runs on the CPU through
+`onnxruntime-node` and needs neither Python nor a remote provider.
+
+Download the model for your language once: `quartznet15x5-ja` (Japanese),
+`quartznet15x5-es` (Spanish) or `quartznet15x5-en` (English). `align` picks
+the model from the ebook's language. The Japanese model is Honomiya's own conversion of
+an Apache-2.0 model; Spanish and English are converted from NVIDIA's CC-BY-4.0
+NeMo models (see `docs/model-licences.md`). All are published in the
+`models-v1` GitHub release and verified by SHA-256 after download. It includes an int8
+variant (about twice as fast on ARM CPUs, same accuracy) that `emit` and
+`align --engine ctc` use by default:
+
+```bash
+bun run honomiya models pull quartznet15x5-ja
+```
+
+Then align with the CTC engine. It computes (and caches) the emissions
+itself:
+
+```bash
+bun run honomiya align --ebook book.epub --audio book.m4b --engine ctc
+```
+
+Or compute emissions separately and reuse them:
+
+```bash
+bun run honomiya emit --audio book.m4b --progress-json
+```
+
+```bash
+bun run honomiya align --ebook book.epub --audio book.m4b --emissions book.honomiya.emissions.bin
+```
+
+The CTC engine finds each chapter in the audio on its own, so reordered,
+missing and extra chapters need no configuration. It writes the same manifest
+and report as the transcript engine. Add `--words` to write a
+`honomiya.read-listen.v2` manifest whose cues also carry word timings that
+tile each sentence; `validate` and `compare` accept both versions.
+
+Pass `--precision fp32` to use the fp32 model instead. To use your own
+quantization, build it with `scripts/quantize-ctc-model.py` and register it
+with `honomiya models import quartznet15x5-ja --int8 model.int8.onnx`.
+
+Models are stored in `HONOMIYA_MODEL_DIR`, or in the user cache directory by
+default. Completed five-minute chunks are cached, so an interrupted run resumes.
+Four threads is the default; on big.LITTLE ARM boards more threads are slower.
+The file keeps the blank score and the 16 best classes per 20 ms frame, about
+12 MiB per hour of audio.
+
 ### Validate the result
 
 Validate a generated manifest independently:
@@ -144,6 +197,13 @@ Validate a generated manifest independently:
 ```bash
 bun run honomiya validate book.honomiya.alignment.json
 bun run honomiya validate book.honomiya.alignment.json --json
+```
+
+Measure a manifest's cue timing against a reference manifest of the same
+ebook, such as one produced from trusted subtitles:
+
+```bash
+bun run honomiya compare candidate.alignment.json reference.alignment.json
 ```
 
 ## CLI options
@@ -170,7 +230,12 @@ bun run honomiya validate book.honomiya.alignment.json --json
 | `--interpolation <mode>` | `align` | Determined by `--quality` | Uses `off`, `conservative`, or `complete`. |
 | `--srt` | `align` | Disabled | Writes UTF-8 SubRip files using ebook text. |
 | `--progress-json` | `align`, `transcribe` | Disabled | Writes versioned progress objects to stderr. |
-| `--json` | `validate` | Disabled | Writes the validation summary as JSON. |
+| `--json` | `validate`, `compare` | Disabled | Writes the summary as JSON. |
+| `--model <id>` | `emit` | From `--language`, else `quartznet15x5-ja` | Selects the CTC acoustic model. |
+| `--model-dir <path>` | `emit`, `models` | `HONOMIYA_MODEL_DIR` or the user cache | Where CTC models are installed. |
+| `--threads <integer>` | `emit` | `4` or fewer | Inference threads. |
+| `--top-k <integer>` | `emit` | `16` | Non-blank classes kept per frame. |
+| `--chunk-minutes <number>` | `emit` | `5` | Technical chunk length for decoding, caching and progress. |
 | `--help`, `-h` | Global or command | — | Shows help. |
 | `--version`, `-v` | Global | — | Prints the Honomiya version. |
 
@@ -182,6 +247,7 @@ bun run honomiya validate book.honomiya.alignment.json --json
 | Alignment report | `align` | `<alignment-output>.report.json` | Revisions, settings, coverage, cue evidence and performance measurements. |
 | SubRip subtitles | `align --srt` | `<audio-stem>.honomiya.srt` | Ebook text with aligned timestamps. |
 | Reusable transcript | `transcribe` | `<audio-stem>.honomiya.transcript.json` | Provider provenance, speech regions, segments and word timestamps. |
+| CTC emissions | `emit` | `<audio-stem>.honomiya.emissions.bin` | Model identity, vocabulary and sparse per-frame log probabilities. |
 | Chunk cache | `align`, `transcribe` | `<output>.cache` | Completed chunks and pending job IDs used for retries and resumability. |
 
 ## Behavior

@@ -6,13 +6,18 @@ import type { CliIO } from "./types";
 
 const PROGRESS_SCHEMA = "honomiya.progress.v1" as const;
 
-function progressMessage(progress: TranscriptionProgress): string {
+export type ProgressPhase = "transcribe" | "emit";
+
+function progressMessage(
+	progress: TranscriptionProgress,
+	phase: ProgressPhase,
+): string {
 	const prefix = `Chunk ${progress.chunk}/${progress.totalChunks}`;
 	switch (progress.state) {
 		case "cached":
 			return `${prefix}: cache hit`;
 		case "starting":
-			return `${prefix}: starting transcription`;
+			return `${prefix}: starting ${phase === "emit" ? "emission" : "transcription"}`;
 		case "resuming":
 			return `${prefix}: reattaching to pending provider job`;
 		case "retrying":
@@ -26,15 +31,16 @@ function writeProgress(
 	io: CliIO,
 	progress: TranscriptionProgress,
 	json: boolean,
+	phase: ProgressPhase,
 ): void {
 	if (!json) {
-		io.writeStderr(`${progressMessage(progress)}\n`);
+		io.writeStderr(`${progressMessage(progress, phase)}\n`);
 		return;
 	}
 	io.writeStderr(
 		`${JSON.stringify({
 			schema: PROGRESS_SCHEMA,
-			phase: "transcribe",
+			phase,
 			sourceIndex: progress.sourceIndex ?? 0,
 			totalSources: progress.totalSources ?? 1,
 			chunk: progress.chunk,
@@ -52,6 +58,7 @@ export function prepareProgressReporting(
 	args: string[],
 	io: CliIO,
 	controls: TranscriptionControls,
+	phase: ProgressPhase = "transcribe",
 ): { args: string[]; controls: TranscriptionControls } {
 	const json = args.includes("--progress-json");
 	return {
@@ -60,7 +67,7 @@ export function prepareProgressReporting(
 			...controls,
 			onProgress: (progress) => {
 				controls.onProgress?.(progress);
-				writeProgress(io, progress, json);
+				writeProgress(io, progress, json, phase);
 			},
 		},
 	};

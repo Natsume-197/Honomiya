@@ -11,10 +11,15 @@ export async function writeJsonAtomically(
 
 export async function writeTextAtomically(
 	path: string,
-	value: string,
+	value: string | Uint8Array,
 ): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
 	await writeFile(temporaryPath, value, "utf8");
 	await rename(temporaryPath, path);
 }
+
+export const writeBytesAtomically: (
+	path: string,
+	value: Uint8Array,
+) => Promise<void> = writeTextAtomically;

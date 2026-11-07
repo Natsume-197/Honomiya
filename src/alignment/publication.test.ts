@@ -210,9 +210,11 @@ describe("publication alignment", () => {
 		});
 		expect(parallelChunks).toBe(2);
 		expect(timestampBackend).toBe("stable-ts");
-		expect(result.report.parameters.quality).toBe("accurate");
-		expect(result.report.parameters.interpolationMode).toBe("complete");
-		expect(result.report.parameters.chapterNgramSize).toBe(5);
+		expect(result.report.parameters).toMatchObject({
+			quality: "accurate",
+			interpolationMode: "complete",
+			chapterNgramSize: 5,
+		});
 		expect(result.report.alignment.bookCoverage).toBe(1);
 		expect(closed).toBe(true);
 		expect(progress).toEqual([
@@ -310,7 +312,9 @@ describe("publication alignment", () => {
 		expect(probedPath).toBe("/books/track.mp3");
 		expect(result.manifest.cues).toHaveLength(2);
 		expect(result.manifest.transcription).toEqual({ origin: "external" });
-		expect(result.report.parameters.interpolationMode).toBe("conservative");
+		expect(result.report.parameters).toMatchObject({
+			interpolationMode: "conservative",
+		});
 		expect(result.report.transcription).toMatchObject({
 			mode: "timed-text",
 			sources: [

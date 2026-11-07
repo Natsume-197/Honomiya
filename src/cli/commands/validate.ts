@@ -1,5 +1,5 @@
 import { ZodError } from "zod";
-import { parseHonomiyaManifest } from "../../artifacts/manifest";
+import { parseAnyHonomiyaManifest } from "../../artifacts/manifest";
 import type { CliContext } from "../types";
 
 export const VALIDATE_USAGE =
@@ -23,13 +23,21 @@ export async function runValidateCommand(
 
 	try {
 		const raw = await context.io.readText(positional[0]);
-		const manifest = parseHonomiyaManifest(JSON.parse(raw));
+		const manifest = parseAnyHonomiyaManifest(JSON.parse(raw));
 		const summary = {
 			schema: manifest.schema,
 			transcriptionOrigin: manifest.transcription?.origin ?? null,
 			granularity: manifest.granularity,
 			audioFiles: manifest.sources.audioFiles.length,
 			cues: manifest.cues.length,
+			...(manifest.schema === "honomiya.read-listen.v2"
+				? {
+						words: manifest.cues.reduce(
+							(total, cue) => total + ("words" in cue ? (cue.words?.length ?? 0) : 0),
+							0,
+						),
+					}
+				: {}),
 		};
 
 		if (jsonOutput) {

@@ -6,6 +6,8 @@ import {
 	QUALITY_SETTINGS,
 	type QualityPreset,
 } from "../config/quality";
+import { type CtcPrecision, isCtcPrecision } from "../ctc/model-store";
+import { type CtcModelId, defaultCtcModelForLanguage, isCtcModelId } from "../ctc/models";
 import {
 	isTranscriptionProviderName,
 	type TranscriptionProviderName,
@@ -35,7 +37,22 @@ export interface AlignOptions {
 	minDirectCoverage?: number;
 	verificationProvider?: TranscriptionProviderName;
 	verificationSamples?: number;
+	/** `ctc` aligns with CTC emissions instead of a timed transcript. */
+	engine?: AlignEngine;
+	ctcModel?: CtcModelId;
+	modelDir?: string;
+	threads?: number;
+	/** Precomputed `honomiya.emissions.v1` files, one per audio source. */
+	emissionsPaths?: string[];
+	/** Write a `read-listen.v2` manifest with word timings (CTC only). */
+	words?: boolean;
+	precision?: CtcPrecision | "auto";
+	/** CTC only: how far each cue end may extend into following silence. */
+	endPaddingMs?: number;
 }
+
+export const ALIGN_ENGINES = ["whisper", "ctc"] as const;
+export type AlignEngine = (typeof ALIGN_ENGINES)[number];
 
 export const DEFAULT_TIMED_TEXT_MIN_DIRECT_COVERAGE = 0.8;
 
@@ -72,7 +89,15 @@ interface MutableAlignOptions {
 	minDirectCoverage?: string;
 	verificationProvider?: string;
 	verificationSamples?: string;
+	engine?: string;
+	ctcModel?: string;
+	modelDir?: string;
+	threads?: string;
+	precision?: string;
+	endPaddingMs?: string;
+	emissionsPaths: string[];
 	srt: boolean;
+	words: boolean;
 }
 
 function assignOnce(
@@ -143,7 +168,9 @@ export function parseAlignOptions(
 		audioPaths: [],
 		transcriptPaths: [],
 		timedTextPaths: [],
+		emissionsPaths: [],
 		srt: false,
+		words: false,
 	};
 
 	for (let position = 0; position < args.length; position += 1) {
@@ -156,6 +183,13 @@ export function parseAlignOptions(
 				throw new AlignOptionsError("--srt may only be provided once");
 			}
 			parsed.srt = true;
+			continue;
+		}
+		if (flag === "--words") {
+			if (parsed.words) {
+				throw new AlignOptionsError("--words may only be provided once");
+			}
+			parsed.words = true;
 			continue;
 		}
 		const value = readValue(args, position, flag);
@@ -246,6 +280,31 @@ export function parseAlignOptions(
 				}
 				parsed.verificationSamples = value;
 				break;
+			case "--engine":
+			case "--model":
+			case "--model-dir":
+			case "--precision":
+			case "--end-padding-ms":
+			case "--threads": {
+				const key = (
+					{
+						"--engine": "engine",
+						"--model": "ctcModel",
+						"--model-dir": "modelDir",
+						"--precision": "precision",
+						"--end-padding-ms": "endPaddingMs",
+						"--threads": "threads",
+					} as const
+				)[flag];
+				if (parsed[key] !== undefined) {
+					throw new AlignOptionsError(`${flag} may only be provided once`);
+				}
+				parsed[key] = value;
+				break;
+			}
+			case "--emissions":
+				parsed.emissionsPaths.push(value);
+				break;
 			default:
 				throw new AlignOptionsError(`Unknown option: ${flag}`);
 		}
@@ -266,6 +325,7 @@ export function parseAlignOptions(
 			...parsed.audioPaths,
 			...parsed.transcriptPaths,
 			...parsed.timedTextPaths,
+			...parsed.emissionsPaths,
 		].some((path) => resolve(path) === resolvedOutput)
 	) {
 		throw new AlignOptionsError("--output must not overwrite an input file");
@@ -301,6 +361,22 @@ export function parseAlignOptions(
 		throw new AlignOptionsError(
 			"--provider cannot be combined with --timed-text",
 		);
+	}
+
+	const engine = parsed.engine ?? (parsed.emissionsPaths.length > 0 ? "ctc" : "whisper");
+	if (!ALIGN_ENGINES.some((candidate) => candidate === engine)) {
+		throw new AlignOptionsError(`Unsupported engine: ${engine}`);
+	}
+	if (engine === "ctc") return parseCtcAlignOptions(parsed, outputPath);
+	if (parsed.words) throw new AlignOptionsError("--words requires --engine ctc");
+	for (const [flag, value] of [
+		["--model", parsed.ctcModel],
+		["--model-dir", parsed.modelDir],
+		["--precision", parsed.precision],
+		["--end-padding-ms", parsed.endPaddingMs],
+		["--threads", parsed.threads],
+	] as const) {
+		if (value !== undefined) throw new AlignOptionsError(`${flag} requires --engine ctc`);
 	}
 
 	const provider =
@@ -454,5 +530,93 @@ export function parseAlignOptions(
 		...(parsed.verificationSamples
 			? { verificationSamples: Number(parsed.verificationSamples) }
 			: {}),
+	};
+}
+
+function parseCtcAlignOptions(
+	parsed: MutableAlignOptions,
+	outputPath: string,
+): AlignOptions {
+	for (const [flag, used] of [
+		["--provider", parsed.provider !== undefined],
+		["--transcript", parsed.transcriptPaths.length > 0],
+		["--timed-text", parsed.timedTextPaths.length > 0],
+		["--timestamp-backend", parsed.timestampBackend !== undefined],
+		["--verify-provider", parsed.verificationProvider !== undefined],
+		["--interpolation", parsed.interpolationMode !== undefined],
+		["--max-chunk-minutes", parsed.maxChunkMinutes !== undefined],
+		["--chunk-overlap-seconds", parsed.chunkOverlapSeconds !== undefined],
+		["--parallel-chunks", parsed.parallelChunks !== undefined],
+		["--retries", parsed.maxRetries !== undefined],
+	] as const) {
+		if (used) throw new AlignOptionsError(`${flag} cannot be combined with --engine ctc`);
+	}
+	if (
+		parsed.emissionsPaths.length > 0 &&
+		parsed.emissionsPaths.length !== parsed.audioPaths.length
+	) {
+		throw new AlignOptionsError("The number of --emissions and --audio values must match");
+	}
+	let ctcModel: CtcModelId | undefined;
+	if (parsed.ctcModel !== undefined) {
+		if (!isCtcModelId(parsed.ctcModel)) {
+			throw new AlignOptionsError(`Unsupported CTC model: ${parsed.ctcModel}`);
+		}
+		ctcModel = parsed.ctcModel;
+	} else if (parsed.language) {
+		const descriptor = defaultCtcModelForLanguage(parsed.language);
+		if (!descriptor) {
+			throw new AlignOptionsError(`No CTC model is available for language ${parsed.language}`);
+		}
+		ctcModel = descriptor.id;
+	}
+	if (
+		parsed.precision !== undefined &&
+		parsed.precision !== "auto" &&
+		!isCtcPrecision(parsed.precision)
+	) {
+		throw new AlignOptionsError(`Unsupported precision: ${parsed.precision}`);
+	}
+	let endPaddingMs: number | undefined;
+	if (parsed.endPaddingMs !== undefined) {
+		endPaddingMs = Number(parsed.endPaddingMs);
+		if (!Number.isInteger(endPaddingMs) || endPaddingMs < 0) {
+			throw new AlignOptionsError("--end-padding-ms must be a non-negative integer");
+		}
+	}
+	let threads: number | undefined;
+	if (parsed.threads !== undefined) {
+		threads = Number(parsed.threads);
+		if (!Number.isInteger(threads) || threads <= 0) {
+			throw new AlignOptionsError("--threads must be a positive integer");
+		}
+	}
+	let minDirectCoverage: number | undefined;
+	if (parsed.minDirectCoverage !== undefined) {
+		minDirectCoverage = Number(parsed.minDirectCoverage);
+		if (!Number.isFinite(minDirectCoverage) || minDirectCoverage < 0 || minDirectCoverage > 1) {
+			throw new AlignOptionsError("--min-direct-coverage must be a number between 0 and 1");
+		}
+	}
+	if (parsed.quality !== undefined) {
+		throw new AlignOptionsError("--quality cannot be combined with --engine ctc");
+	}
+	return {
+		ebookPath: parsed.ebookPath as string,
+		audioPaths: parsed.audioPaths,
+		transcriptPaths: [],
+		outputPath,
+		engine: "ctc",
+		language: parsed.language,
+		...(ctcModel ? { ctcModel } : {}),
+		...(parsed.modelDir ? { modelDir: parsed.modelDir } : {}),
+		...(threads === undefined ? {} : { threads }),
+		...(parsed.emissionsPaths.length > 0 ? { emissionsPaths: parsed.emissionsPaths } : {}),
+		...(parsed.cacheDir ? { cacheDir: parsed.cacheDir } : {}),
+		...(parsed.srt ? { srt: true } : {}),
+		...(parsed.words ? { words: true } : {}),
+		...(parsed.precision ? { precision: parsed.precision as CtcPrecision | "auto" } : {}),
+		...(endPaddingMs === undefined ? {} : { endPaddingMs }),
+		...(minDirectCoverage === undefined ? {} : { minDirectCoverage }),
 	};
 }

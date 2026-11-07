@@ -297,3 +297,36 @@ describe("align options", () => {
 		).toThrow("--provider cannot be combined with --transcript");
 	});
 });
+
+describe("CTC engine options", () => {
+	test("needs no provider and selects the model from the language", () => {
+		expect(
+			parseAlignOptions(
+				["--ebook", "b.epub", "--audio", "a.m4b", "--engine", "ctc", "--language", "ja", "--threads", "4"],
+				{},
+			),
+		).toMatchObject({ engine: "ctc", ctcModel: "quartznet15x5-ja", threads: 4, transcriptPaths: [] });
+	});
+
+	test("infers the engine from precomputed emissions", () => {
+		expect(
+			parseAlignOptions(["--ebook", "b.epub", "--audio", "a.m4b", "--emissions", "a.emissions.bin"], {}),
+		).toMatchObject({ engine: "ctc", emissionsPaths: ["a.emissions.bin"] });
+	});
+
+	test("rejects transcript-engine options", () => {
+		const base = ["--ebook", "b.epub", "--audio", "a.m4b", "--engine", "ctc"];
+		expect(() => parseAlignOptions([...base, "--provider", "modal"], {})).toThrow(/--provider cannot/);
+		expect(() => parseAlignOptions([...base, "--timed-text", "a.srt"], {})).toThrow(/--timed-text cannot/);
+		expect(() => parseAlignOptions([...base, "--quality", "fast"], {})).toThrow(/--quality cannot/);
+		expect(() =>
+			parseAlignOptions([...base, "--emissions", "x.bin", "--audio", "b.m4b"], {}),
+		).toThrow(/--emissions and --audio/);
+		expect(() =>
+			parseAlignOptions(["--ebook", "b.epub", "--audio", "a.m4b", "--model", "quartznet15x5-ja"], {
+				HONOMIYA_PROVIDER: "local",
+			}),
+		).toThrow(/requires --engine ctc/);
+		expect(() => parseAlignOptions([...base.slice(0, 4), "--engine", "x"], {})).toThrow(/Unsupported engine/);
+	});
+});

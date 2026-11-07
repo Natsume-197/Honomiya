@@ -1,4 +1,5 @@
 import { executeAlignCommand } from "../alignment/publication";
+import { executeEmitCommand } from "../ctc/command";
 import { executeTranscribeCommand } from "../transcription/command";
 import type { CliCommands, CliIO } from "./types";
 
@@ -13,4 +14,5 @@ export const runtimeCommands: CliCommands = {
 		(await executeAlignCommand(options, controls)).alignment,
 	transcribe: (options, controls) =>
 		executeTranscribeCommand(options, undefined, controls),
+	emit: (options, controls) => executeEmitCommand(options, controls),
 };

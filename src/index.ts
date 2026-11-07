@@ -28,11 +28,19 @@ export {
 } from "./alignment/text";
 export {
 	HONOMIYA_MANIFEST_SCHEMA,
+	HONOMIYA_MANIFEST_V2_SCHEMA,
+	type HonomiyaManifest,
 	type HonomiyaManifestV1,
+	type HonomiyaManifestV2,
 	honomiyaManifestV1Schema,
+	honomiyaManifestV2Schema,
+	parseAnyHonomiyaManifest,
 	parseHonomiyaManifest,
+	parseHonomiyaManifestV2,
 	type ReadListenCue,
+	type ReadListenCueV2,
 	readListenCueSchema,
+	readListenCueV2Schema,
 } from "./artifacts/manifest";
 export {
 	defaultAlignmentOutputPath,

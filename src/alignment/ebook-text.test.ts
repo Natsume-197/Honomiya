@@ -72,6 +72,37 @@ describe("EPUB sentence extraction", () => {
 		expect(sentence?.text).toBe("Hello dear reader.");
 	});
 
+	test("records ruby readings as spans of the sentence text", () => {
+		const sentences = extractSectionSentences(
+			"<p>前文。<ruby><rb>空</rb><rt>セリカ</rt></ruby>は<ruby><rb>荘</rb><rt>そう</rt><rb>厳</rb><rt>ごん</rt></ruby>な<ruby>彼方<rp>(</rp><rt>かなた</rt><rp>)</rp></ruby>を見た。</p>",
+			"chapter-6",
+			5,
+			"ja",
+		);
+		expect(sentences.map((sentence) => sentence.text)).toEqual([
+			"前文。",
+			"空は荘厳な彼方を見た。",
+		]);
+		expect(sentences[0]?.ruby).toBeUndefined();
+		expect(sentences[1]?.ruby).toEqual([
+			{ start: 0, end: 1, reading: "セリカ" },
+			{ start: 2, end: 3, reading: "そう" },
+			{ start: 3, end: 4, reading: "ごん" },
+			{ start: 5, end: 7, reading: "かなた" },
+		]);
+	});
+
+	test("keeps ruby offsets through whitespace collapsing and nested markup", () => {
+		const [sentence] = extractSectionSentences(
+			'<p>  An   <ruby><span class="c7">老舗</span><rt><span>しにせ</span></rt></ruby>  shop <ruby>無印<rt></rt></ruby>.</p>',
+			"chapter-7",
+			6,
+			"ja",
+		);
+		expect(sentence?.text).toBe("An 老舗 shop 無印.");
+		expect(sentence?.ruby).toEqual([{ start: 3, end: 5, reading: "しにせ" }]);
+	});
+
 	test("keeps ruby base text without duplicating its pronunciation", () => {
 		const [sentence] = extractSectionSentences(
 			"<p><ruby>比企谷<rt>ひきがや</rt></ruby>八幡。</p>",
