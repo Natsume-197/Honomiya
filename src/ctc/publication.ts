@@ -1,3 +1,4 @@
+import { probeAudio } from "../transcription/chunks";
 import { basename } from "node:path";
 import packageJson from "../../package.json" with { type: "json" };
 import { extractEbookSentences } from "../alignment/ebook-text";
@@ -151,6 +152,8 @@ export async function alignPublicationWithCtc(
 	const alignmentStartedAt = performance.now();
 	const aligned = alignWithCtc(sentences, tracks, {
 		locale: language,
+		chapters: tracks.length === 1 && tracks[0]?.header.model.id === "quartznet15x5-ja"
+			? await probeAudio(options.audioPaths[0]!).then(probe => probe.chapters, () => []) : [],
 		...(options.endPaddingMs === undefined ? {} : { alignment: { endPaddingMs: options.endPaddingMs } }),
 	});
 	const alignmentMs = performance.now() - alignmentStartedAt;

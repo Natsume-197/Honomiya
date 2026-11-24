@@ -1,3 +1,5 @@
+import type { AudioChapter } from "../transcription/chunks";
+import { balancedGroups, freeAudioWindows, recoveryEvidence, supportedRecovery } from "./recovery";
 import type { AddressableSentence } from "../alignment/ebook-text";
 import type {
 	AlignedCue,
@@ -15,7 +17,7 @@ import {
 	trackFrame,
 } from "./search";
 import { CTC_MODELS, isCtcModelId } from "./models";
-import { type ConditionedText, conditionText, VocabularyIndex } from "./text";
+import { type ConditionedText, conditionText, STAR, VocabularyIndex } from "./text";
 import { EmissionReader, forcedAlign, segmentScores } from "./viterbi";
 
 export const CTC_ALIGNMENT_VERSION = "honomiya.ctc-align.v1" as const;
@@ -65,6 +67,8 @@ export interface CtcAlignedCue extends AlignedCue {
 
 export interface CtcAlignmentReport {
 	algorithm: typeof CTC_ALIGNMENT_VERSION;
+	chapterRecovery?: Array<{ sectionRef: string; candidates: number; accepted: number }>;
+	recovery?: Array<{ sectionRef: string; candidates: number; accepted: number }>;
 	chapters: Array<{
 		sectionRef: string;
 		status: ChapterLocation["status"];
@@ -95,6 +99,86 @@ function thinAnchors(anchors: Anchor[], spacing: number): Anchor[] {
 	return kept;
 }
 
+const SILENCE_SNAP_GAP_FRAMES = 25;
+const SILENCE_SNAP_WEAK_GAP_FRAMES = 80;
+const SILENCE_SNAP_TOKEN_FRAMES = 5;
+const WEAK_TOKEN_SCORE = -7.0;
+const SOFT_WEAK_TOKEN_SCORE = -6.0;
+const DEAD_EDGE_SENTENCE_SCORE = -5.2;
+
+/**
+ * Snaps leading or trailing STAR / low-probability tokens that Viterbi placed
+ * across a long internal silence (> 500 ms for STAR/very weak, > 1 s for weak
+ * tokens) back next to the sentence's real acoustic speech, without touching
+ * genuinely spoken leading words separated by an intentional narrator pause.
+ */
+export function snapBoundaryTokens(
+	tokens: Int32Array,
+	range: { start: number; end: number },
+	tokenFirst: Int32Array,
+	tokenLast: Int32Array,
+	tokenScore: Float32Array,
+): void {
+	const isWeak = (t: number, threshold = WEAK_TOKEN_SCORE) =>
+		tokens[t] === STAR || Number.isNaN(tokenScore[t]!) || tokenScore[t]! < threshold;
+
+	let firstReal = -1;
+	for (let t = range.start; t < range.end; t++) {
+		if ((tokenFirst[t] ?? -1) < 0) continue;
+		if (!isWeak(t, WEAK_TOKEN_SCORE)) { firstReal = t; break; }
+	}
+	let snapBefore = -1;
+	if (firstReal > range.start) {
+		let prev = -1;
+		for (let t = firstReal - 1; t >= range.start; t--) {
+			if ((tokenFirst[t] ?? -1) >= 0) { prev = t; break; }
+		}
+		if (prev >= range.start && tokenFirst[firstReal]! - (tokenLast[prev]! + 1) > SILENCE_SNAP_GAP_FRAMES) {
+			snapBefore = firstReal;
+		}
+	}
+	if (snapBefore < 0) {
+		const maxLead = Math.min(range.end - 1, range.start + 2);
+		for (let t = range.start; t < maxLead; t++) {
+			if ((tokenFirst[t] ?? -1) < 0 || (tokenFirst[t + 1] ?? -1) < 0) continue;
+			if (!isWeak(t, SOFT_WEAK_TOKEN_SCORE)) break;
+			if (tokenFirst[t + 1]! - (tokenLast[t]! + 1) > SILENCE_SNAP_WEAK_GAP_FRAMES) {
+				snapBefore = t + 1;
+			}
+		}
+	}
+	if (snapBefore > range.start) {
+		const anchor = tokenFirst[snapBefore]!;
+		for (let t = range.start; t < snapBefore; t++) {
+			if ((tokenFirst[t] ?? -1) < 0) continue;
+			const snapped = Math.max(tokenFirst[t]!, anchor - (snapBefore - t) * SILENCE_SNAP_TOKEN_FRAMES);
+			tokenFirst[t] = snapped;
+			tokenLast[t] = Math.max(snapped, Math.min(anchor - 1, snapped + SILENCE_SNAP_TOKEN_FRAMES - 1));
+		}
+	}
+
+	let lastReal = -1;
+	for (let t = range.end - 1; t >= range.start; t--) {
+		if ((tokenFirst[t] ?? -1) < 0) continue;
+		if (!isWeak(t, WEAK_TOKEN_SCORE)) { lastReal = t; break; }
+	}
+	if (lastReal >= range.start && lastReal + 1 < range.end) {
+		let next = -1;
+		for (let t = lastReal + 1; t < range.end; t++) {
+			if ((tokenFirst[t] ?? -1) >= 0) { next = t; break; }
+		}
+		if (next > lastReal && tokenFirst[next]! - (tokenLast[lastReal]! + 1) > SILENCE_SNAP_GAP_FRAMES) {
+			const anchor = tokenLast[lastReal]! + 1;
+			for (let t = lastReal + 1; t < range.end; t++) {
+				if ((tokenFirst[t] ?? -1) < 0) continue;
+				const snappedEnd = Math.min(tokenLast[t]!, anchor + (t - lastReal) * SILENCE_SNAP_TOKEN_FRAMES - 1);
+				tokenFirst[t] = Math.min(tokenFirst[t]!, Math.max(anchor, snappedEnd - SILENCE_SNAP_TOKEN_FRAMES + 1));
+				tokenLast[t] = Math.max(tokenFirst[t]!, snappedEnd);
+			}
+		}
+	}
+}
+
 /**
  * Aligns ebook sentences to CTC emissions: conditions the text, places
  * chapters, runs Viterbi between anchors and turns token frames into cues.
@@ -103,7 +187,457 @@ function thinAnchors(anchors: Anchor[], spacing: number): Anchor[] {
 export function alignWithCtc(
 	sentences: AddressableSentence[],
 	tracks: CtcEmissions[],
-	options: { locale?: string; alignment?: Partial<CtcAlignmentOptions> } = {},
+	options: { locale?: string; alignment?: Partial<CtcAlignmentOptions>; chapters?: AudioChapter[] } = {},
+): { cues: CtcAlignedCue[]; report: AlignmentReport; ctc: CtcAlignmentReport } {
+	const primary = alignPass(sentences, tracks, options);
+	// Calibrated only for single-track Japanese QuartzNet.
+	if (tracks.length !== 1 || tracks[0]?.header.model.id !== "quartznet15x5-ja") return primary;
+	const missing = primary.report.chapters.filter(c => c.directCues + c.interpolatedCues === 0 && c.sentences >= 24);
+	if (!missing.length) return primary;
+	const targets = new Set(missing.map(c => c.sectionRef));
+	const alternate = alignPass(sentences, tracks, options, { targets, ngram: 4 });
+	const evidence = recoveryEvidence(tracks[0]);
+	const grouped = new Map<string, CtcAlignedCue[]>();
+	for (const row of alternate.cues) {
+		const section = row.cue.text.sectionRef;
+		if (!targets.has(section)) continue;
+		const group = grouped.get(section) ?? [];
+		group.push(row);
+		grouped.set(section, group);
+	}
+	const accepted: CtcAlignedCue[] = [];
+	for (const chapter of missing) {
+		const candidates = grouped.get(chapter.sectionRef) ?? [];
+		const supported = supportedRecovery(candidates, evidence);
+		let cursor = 0;
+		const safe = supported.filter(({ cue }) => {
+			while (cursor < primary.cues.length && primary.cues[cursor]!.cue.endMs <= cue.startMs) cursor++;
+			return cursor === primary.cues.length || primary.cues[cursor]!.cue.startMs >= cue.endMs;
+		});
+		(primary.ctc.recovery ??= []).push({ sectionRef: chapter.sectionRef, candidates: candidates.length, accepted: safe.length });
+		if (!safe.length) continue;
+		accepted.push(...safe);
+		chapter.audioFileIndex = 0;
+		chapter.directCues += safe.length;
+		chapter.unmatchedSentences -= safe.length;
+	}
+	// Windowed group recovery: search remaining unaligned runs (>= 24 sentences)
+	// in balanced ~32-sentence groups across unoccupied audio windows.
+	const placedIds = new Set([...primary.cues, ...accepted].map(r => r.cue.id));
+	const remainingChapters = primary.report.chapters.filter(c => c.unmatchedSentences >= 24);
+	if (remainingChapters.length) {
+		const track = tracks[0];
+		const step = frameDurationMs(track.header);
+		const width = track.header.topK;
+		const occupiedSpans = [...primary.cues, ...accepted].map(r => ({
+			startMs: r.cue.startMs,
+			endMs: r.cue.endMs,
+		}));
+		const windows = freeAudioWindows(track.header.sourceDurationMs, occupiedSpans, options.chapters ?? []);
+		const clips = windows
+			.map(win => {
+				const from = Math.max(0, Math.floor(win.startMs / step));
+				const to = Math.min(track.header.frames, Math.ceil(win.endMs / step));
+				if (from >= to) return undefined;
+				const clip: CtcEmissions = {
+					header: { ...track.header, startFrame: 0, frames: to - from, sourceDurationMs: (to - from) * step },
+					blank: track.blank.subarray(from, to),
+					classes: track.classes.subarray(from * width, to * width),
+					scores: track.scores.subarray(from * width, to * width),
+				};
+				return { startMs: from * step, endMs: to * step, offset: from * step, clip, evidence: recoveryEvidence(clip) };
+			})
+			.filter((c): c is NonNullable<typeof c> => Boolean(c));
+
+		for (const chapter of remainingChapters) {
+			const sectionSentences = sentences.filter(s => s.sectionRef === chapter.sectionRef);
+			const runs: AddressableSentence[][] = [];
+			let currentRun: AddressableSentence[] = [];
+			for (const s of sectionSentences) {
+				if (placedIds.has(s.id)) {
+					if (currentRun.length >= 24) runs.push(currentRun);
+					currentRun = [];
+				} else {
+					currentRun.push(s);
+				}
+			}
+			if (currentRun.length >= 24) runs.push(currentRun);
+			if (!runs.length) continue;
+
+			const allGroups = runs.flatMap(run => balancedGroups(run, 32));
+			let pending = allGroups.map((items, idx) => ({ gid: String(idx), items }));
+			let totalCandidates = 0;
+			let added = 0;
+
+			for (const { startMs, endMs, offset, clip, evidence: localEvidence } of clips) {
+				if (!pending.length) break;
+				const groupedSentences = pending.flatMap(({ gid, items }) =>
+					items.map(s => ({ ...s, sectionRef: gid })),
+				);
+				const groupIds = new Set(pending.map(p => p.gid));
+				const attempt = alignPass(groupedSentences, [clip], options, { targets: groupIds, ngram: 4 });
+				totalCandidates += attempt.cues.length;
+				if (!attempt.cues.length) continue;
+
+				const byId = new Map(groupedSentences.map(s => [s.id, s.sectionRef]));
+				const occupied = [...primary.cues, ...accepted].filter(
+					r => r.cue.endMs > startMs && r.cue.startMs < endMs,
+				);
+				const resolvedGids = new Set<string>();
+				for (const { gid } of pending) {
+					const rows = attempt.cues.filter(r => byId.get(r.cue.id) === gid);
+					const supported = supportedRecovery(rows, localEvidence);
+					if (!supported.length) continue;
+					const safe: CtcAlignedCue[] = [];
+					for (const row of supported) {
+						const start = row.cue.startMs + offset;
+						const end = row.cue.endMs + offset;
+						if (occupied.some(r => r.cue.startMs < end && r.cue.endMs > start)) continue;
+						row.cue.startMs = start;
+						row.cue.endMs = end;
+						for (const word of row.words) {
+							word.startMs += offset;
+							word.endMs += offset;
+						}
+						safe.push(row);
+					}
+					if (safe.length) {
+						accepted.push(...safe);
+						occupied.push(...safe);
+						for (const row of safe) placedIds.add(row.cue.id);
+						added += safe.length;
+						resolvedGids.add(gid);
+					}
+				}
+				if (resolvedGids.size) pending = pending.filter(p => !resolvedGids.has(p.gid));
+			}
+
+			(primary.ctc.chapterRecovery ??= []).push({
+				sectionRef: chapter.sectionRef,
+				candidates: totalCandidates,
+				accepted: added,
+			});
+			if (added) {
+				chapter.audioFileIndex = 0;
+				chapter.directCues += added;
+				chapter.unmatchedSentences -= added;
+			}
+		}
+
+		// Sandwiched gap-filling: inside sections where recovery placed cues,
+		// align any remaining unaligned run tightly bounded between two placed
+		// cues of the same section via forced Viterbi, verified by acoustic
+		// evidence and speaking-rate bounds.
+		const settings = { ...DEFAULT_CTC_ALIGNMENT_OPTIONS, ...options.alignment };
+		const correction = currentTimingCorrection(track.header.model);
+		const vocab = new VocabularyIndex({ tokens: track.header.vocabulary, blank: track.header.blank });
+		const reader = new EmissionReader([track]);
+		const decodeStub = { trackStartFrames: [0, track.header.frames] };
+		const fullEvidence = recoveryEvidence(track);
+
+		for (const chapter of remainingChapters) {
+			if (!chapter.directCues || !chapter.unmatchedSentences) continue;
+			const sectionSentences = sentences.filter(s => s.sectionRef === chapter.sectionRef);
+			const cueById = new Map<string, CtcAlignedCue>();
+			for (const r of primary.cues) if (r.cue.text.sectionRef === chapter.sectionRef) cueById.set(r.cue.id, r);
+			for (const r of accepted) if (r.cue.text.sectionRef === chapter.sectionRef) cueById.set(r.cue.id, r);
+			let gapAdded = 0;
+
+			for (let i = 0; i < sectionSentences.length; ) {
+				if (cueById.has(sectionSentences[i]!.id)) { i++; continue; }
+				let j = i;
+				while (j < sectionSentences.length && !cueById.has(sectionSentences[j]!.id)) j++;
+				const before = i > 0 ? cueById.get(sectionSentences[i - 1]!.id) : undefined;
+				const after = j < sectionSentences.length ? cueById.get(sectionSentences[j]!.id) : undefined;
+				const gap = sectionSentences.slice(i, j);
+				i = j;
+				if (!before || !after || after.cue.startMs <= before.cue.endMs) continue;
+
+				const gapStartMs = before.cue.endMs;
+				const gapEndMs = after.cue.startMs;
+				const occupied = [...primary.cues, ...accepted].some(
+					r => r.cue.startMs < gapEndMs && r.cue.endMs > gapStartMs,
+				);
+				if (occupied) continue;
+
+				const text = conditionText(gap, vocab, { locale: options.locale });
+				const tokenCount = text.tokens.length;
+				if (!tokenCount) continue;
+
+				// Give Viterbi a tiny frame margin from before's end (undo endPaddingMs)
+				// to after's start so boundary syllables aren't clipped.
+				const fromFrame = Math.max(0, Math.floor((gapStartMs - settings.endPaddingMs) / step));
+				const toFrame = Math.min(track.header.frames, Math.ceil(gapEndMs / step));
+				const frames = toFrame - fromFrame;
+				if (frames < tokenCount) continue;
+				const rate = frames / tokenCount;
+				const maxRate = gap.length <= 6 ? 120 : 30;
+				if (rate < 1.5 || rate > maxRate) continue;
+				if (frames * (2 * tokenCount + 1) > settings.maxSegmentCells) continue;
+
+				const scores = segmentScores(reader, text.classSets, text.tokens, fromFrame, toFrame);
+				const aligned = forcedAlign(scores, text.tokens, { freeStart: true, freeEnd: true });
+				if (aligned.score === Number.NEGATIVE_INFINITY) continue;
+
+				const tokenFirst = new Int32Array(tokenCount).fill(-1);
+				const tokenLast = new Int32Array(tokenCount).fill(-1);
+				const tokenScore = new Float32Array(tokenCount).fill(Number.NaN);
+				for (let t = 0; t < tokenCount; t++) {
+					const f = aligned.firstFrame[t] ?? -1;
+					if (f < 0) continue;
+					tokenFirst[t] = fromFrame + f;
+					tokenLast[t] = fromFrame + (aligned.lastFrame[t] ?? f);
+					tokenScore[t] = aligned.tokenScore[t] ?? Number.NaN;
+				}
+
+				const sentRanges: Array<{ start: number; end: number } | undefined> = gap.map(() => undefined);
+				for (let t = 0; t < tokenCount; t++) {
+					const s = text.sentence[t] ?? 0;
+					const range = sentRanges[s];
+					if (range) range.end = t + 1;
+					else sentRanges[s] = { start: t, end: t + 1 };
+				}
+
+				const candidates: CtcAlignedCue[] = [];
+				let prevEnd = gapStartMs;
+				for (const [sIdx, range] of sentRanges.entries()) {
+					if (!range) continue;
+					snapBoundaryTokens(text.tokens, range, tokenFirst, tokenLast, tokenScore);
+					let sf = -1;
+					let ef = -1;
+					let scoreSum = 0;
+					let scored = 0;
+					for (let t = range.start; t < range.end; t++) {
+						if (tokenFirst[t]! < 0) continue;
+						if (sf < 0) sf = tokenFirst[t]!;
+						ef = tokenLast[t]! + 1;
+						const sc = tokenScore[t]!;
+						if (!Number.isNaN(sc)) { scoreSum += sc; scored++; }
+					}
+					if (sf < 0) continue;
+					const count = range.end - range.start;
+					const meanScore = scored > 0 ? scoreSum / scored : Number.NEGATIVE_INFINITY;
+					if (
+						count >= settings.droppedMinTokens &&
+						(ef - sf) / count < settings.droppedMaxFramesPerToken &&
+						meanScore < settings.droppedMaxScore
+					) {
+						continue;
+					}
+					const startMs = Math.max(prevEnd, Math.min(gapEndMs - 1, Math.round(sf * step + correction.start)));
+					const endMs = Math.max(startMs + 1, Math.min(gapEndMs, Math.round(ef * step + correction.end)));
+					if (startMs >= gapEndMs) continue;
+					prevEnd = endMs;
+					const sentence = gap[sIdx]!;
+					candidates.push({
+						cue: {
+							id: sentence.id,
+							text: sentence.anchor,
+							audioFileIndex: 0,
+							startMs,
+							endMs,
+						},
+						evidence: {
+							kind: "direct",
+							score: Number(Math.max(0, Math.min(1, Math.exp(meanScore))).toFixed(4)),
+						},
+						text: sentence.text,
+						words: tileWords(
+							wordStarts(text, range, tokenFirst, step, correction.start, decodeStub),
+							startMs,
+							endMs,
+							sentence.text,
+						),
+					});
+				}
+				if (!candidates.length) continue;
+
+				// Acoustic verification for sandwiched gaps:
+				// - >= 8 sentences: require >= 60% of 8-sentence blocks to have >= 2 hits
+				// - < 8 sentences: require at least 1 hit (or mean log-prob > droppedMaxScore for 1-2 sentences)
+				let verified = false;
+				if (candidates.length >= 8) {
+					let blocks = 0;
+					let supportedBlocks = 0;
+					for (let b = 0; b + 8 <= candidates.length; b += 8) {
+						blocks++;
+						const hits = candidates.slice(b, b + 8).filter(fullEvidence).length;
+						if (hits >= 2) supportedBlocks++;
+					}
+					verified = blocks > 0 && supportedBlocks >= 0.6 * blocks;
+				} else {
+					const hits = candidates.filter(fullEvidence).length;
+					const meanProb = candidates.reduce((s, c) => s + (c.evidence.score ?? 0), 0) / candidates.length;
+					verified =
+						hits >= 1 ||
+						(candidates.length <= 2 && candidates.every(c => (c.evidence.score ?? 0) >= Math.exp(settings.droppedMaxScore))) ||
+						(candidates.length <= 6 && meanProb >= Math.exp(-3.5));
+				}
+				if (!verified) continue;
+
+				padCueEnds(candidates, settings.endPaddingMs, () => gapEndMs);
+				for (const row of candidates) {
+					accepted.push(row);
+					cueById.set(row.cue.id, row);
+					placedIds.add(row.cue.id);
+				}
+				gapAdded += candidates.length;
+			}
+
+			if (gapAdded) {
+				chapter.directCues += gapAdded;
+				chapter.unmatchedSentences -= gapAdded;
+			}
+		}
+
+		// Short sandwiched chapter recovery: align short unaligned chapters (< 24
+		// sentences, e.g. a preface) that sit between two placed chapters in book
+		// order with an unoccupied audio gap between them, requiring strong
+		// greedy-decode acoustic evidence.
+		const chapterList = primary.report.chapters;
+		const chapterBounds = new Map<string, { startMs: number; endMs: number }>();
+		for (const r of [...primary.cues, ...accepted]) {
+			const sec = r.cue.text.sectionRef;
+			const cur = chapterBounds.get(sec);
+			if (!cur) chapterBounds.set(sec, { startMs: r.cue.startMs, endMs: r.cue.endMs });
+			else {
+				cur.startMs = Math.min(cur.startMs, r.cue.startMs);
+				cur.endMs = Math.max(cur.endMs, r.cue.endMs);
+			}
+		}
+		for (let ci = 1; ci + 1 < chapterList.length; ci++) {
+			const chapter = chapterList[ci]!;
+			if (chapter.directCues + chapter.interpolatedCues > 0) continue;
+			if (chapter.sentences < 1 || chapter.sentences >= 24) continue;
+			const prevBounds = chapterBounds.get(chapterList[ci - 1]!.sectionRef);
+			const nextBounds = chapterBounds.get(chapterList[ci + 1]!.sectionRef);
+			if (!prevBounds || !nextBounds || nextBounds.startMs <= prevBounds.endMs) continue;
+
+			const gapStartMs = prevBounds.endMs;
+			const gapEndMs = nextBounds.startMs;
+			const occupied = [...primary.cues, ...accepted].some(
+				r => r.cue.startMs < gapEndMs && r.cue.endMs > gapStartMs,
+			);
+			if (occupied) continue;
+
+			const sectionSentences = sentences.filter(s => s.sectionRef === chapter.sectionRef);
+			const text = conditionText(sectionSentences, vocab, { locale: options.locale });
+			const tokenCount = text.tokens.length;
+			if (tokenCount < 10) continue;
+
+			const fromFrame = Math.max(0, Math.floor((gapStartMs - settings.endPaddingMs) / step));
+			const toFrame = Math.min(track.header.frames, Math.ceil((gapEndMs + 200) / step));
+			const frames = toFrame - fromFrame;
+			if (frames < tokenCount) continue;
+			const rate = frames / tokenCount;
+			if (rate < 1.5 || rate > 60) continue;
+			if (frames * (2 * tokenCount + 1) > settings.maxSegmentCells) continue;
+
+			const scores = segmentScores(reader, text.classSets, text.tokens, fromFrame, toFrame);
+			const aligned = forcedAlign(scores, text.tokens, { freeStart: true, freeEnd: true });
+			if (aligned.score === Number.NEGATIVE_INFINITY) continue;
+
+			const tokenFirst = new Int32Array(tokenCount).fill(-1);
+			const tokenLast = new Int32Array(tokenCount).fill(-1);
+			const tokenScore = new Float32Array(tokenCount).fill(Number.NaN);
+			for (let t = 0; t < tokenCount; t++) {
+				const f = aligned.firstFrame[t] ?? -1;
+				if (f < 0) continue;
+				tokenFirst[t] = fromFrame + f;
+				tokenLast[t] = fromFrame + (aligned.lastFrame[t] ?? f);
+				tokenScore[t] = aligned.tokenScore[t] ?? Number.NaN;
+			}
+			const sentRanges: Array<{ start: number; end: number } | undefined> = sectionSentences.map(() => undefined);
+			for (let t = 0; t < tokenCount; t++) {
+				const s = text.sentence[t] ?? 0;
+				const range = sentRanges[s];
+				if (range) range.end = t + 1;
+				else sentRanges[s] = { start: t, end: t + 1 };
+			}
+			const candidates: CtcAlignedCue[] = [];
+			let prevEnd = gapStartMs;
+			let logScoreSum = 0;
+			for (const [sIdx, range] of sentRanges.entries()) {
+				if (!range) continue;
+				snapBoundaryTokens(text.tokens, range, tokenFirst, tokenLast, tokenScore);
+				let sf = -1;
+				let ef = -1;
+				let scoreSum = 0;
+				let scored = 0;
+				for (let t = range.start; t < range.end; t++) {
+					if (tokenFirst[t]! < 0) continue;
+					if (sf < 0) sf = tokenFirst[t]!;
+					ef = tokenLast[t]! + 1;
+					const sc = tokenScore[t]!;
+					if (!Number.isNaN(sc)) { scoreSum += sc; scored++; }
+				}
+				if (sf < 0) continue;
+				const count = range.end - range.start;
+				const meanScore = scored > 0 ? scoreSum / scored : Number.NEGATIVE_INFINITY;
+				if (count >= settings.droppedMinTokens && meanScore < DEAD_EDGE_SENTENCE_SCORE) continue;
+				const startMs = Math.max(prevEnd, Math.min(gapEndMs - 1, Math.round(sf * step + correction.start)));
+				const endMs = Math.max(startMs + 1, Math.min(gapEndMs, Math.round(ef * step + correction.end)));
+				if (startMs >= gapEndMs) continue;
+				prevEnd = endMs;
+				logScoreSum += meanScore;
+				const sentence = sectionSentences[sIdx]!;
+				candidates.push({
+					cue: {
+						id: sentence.id,
+						text: sentence.anchor,
+						audioFileIndex: 0,
+						startMs,
+						endMs,
+					},
+					evidence: {
+						kind: "direct",
+						score: Number(Math.max(0, Math.min(1, Math.exp(meanScore))).toFixed(4)),
+					},
+					text: sentence.text,
+					words: tileWords(
+						wordStarts(text, range, tokenFirst, step, correction.start, decodeStub),
+						startMs,
+						endMs,
+						sentence.text,
+					),
+				});
+			}
+			if (!candidates.length) continue;
+			const hits = candidates.filter(fullEvidence).length;
+			const avgLogScore = logScoreSum / candidates.length;
+			if (hits < Math.max(1, Math.ceil(candidates.length / 2)) || avgLogScore < settings.droppedMaxScore) continue;
+
+			padCueEnds(candidates, settings.endPaddingMs, () => gapEndMs);
+			for (const row of candidates) {
+				accepted.push(row);
+				placedIds.add(row.cue.id);
+			}
+			chapter.audioFileIndex = 0;
+			chapter.directCues += candidates.length;
+			chapter.unmatchedSentences -= candidates.length;
+			chapterBounds.set(chapter.sectionRef, {
+				startMs: candidates[0]!.cue.startMs,
+				endMs: candidates.at(-1)!.cue.endMs,
+			});
+		}
+	}
+	if (accepted.length) {
+		primary.cues = primary.cues.concat(accepted).sort((a,b) => a.cue.startMs - b.cue.startMs);
+		const report = primary.report;
+		report.directCues += accepted.length;
+		report.unmatchedSentences -= accepted.length;
+		report.directCoverage = report.directCues / report.bookSentences;
+		report.bookCoverage = primary.cues.length / report.bookSentences;
+		report.unmatchedAudioFiles = [];
+	}
+	return primary;
+}
+
+function alignPass(
+	sentences: AddressableSentence[],
+	tracks: CtcEmissions[],
+	options: { locale?: string; alignment?: Partial<CtcAlignmentOptions> },
+	recovery?: { targets: Set<string>; ngram: number },
 ): { cues: CtcAlignedCue[]; report: AlignmentReport; ctc: CtcAlignmentReport } {
 	const settings = { ...DEFAULT_CTC_ALIGNMENT_OPTIONS, ...options.alignment };
 	const first = tracks[0];
@@ -133,6 +667,7 @@ export function alignWithCtc(
 	const locations = locateChapters(text, spans, decode, {
 		...DEFAULT_BOUNDARY_SEARCH_OPTIONS,
 		...(ngram ? { ngram } : {}),
+		...(recovery ? { ngram: recovery.ngram } : {}),
 	});
 	const searchMs = performance.now() - searchStarted;
 
@@ -157,6 +692,7 @@ export function alignWithCtc(
 			oversizedSegments: 0,
 		};
 		chapterReports.push(chapterReport);
+		if (recovery && !recovery.targets.has(sectionRef)) continue;
 		if (location.status !== "found" || location.startFrame === undefined || location.endFrame === undefined) {
 			continue;
 		}
@@ -211,6 +747,7 @@ export function alignWithCtc(
 	let droppedSentences = 0;
 	for (const [sentence, range] of sentenceTokens.entries()) {
 		if (!range) continue;
+		snapBoundaryTokens(text.tokens, range, tokenFirst, tokenLast, tokenScore);
 		let startFrame = -1;
 		let endFrame = -1;
 		let scoreSum = 0;
@@ -237,6 +774,42 @@ export function alignWithCtc(
 			continue;
 		}
 		sentenceFrames[sentence] = { startFrame, endFrame, score: meanScore };
+	}
+
+	// Trim un-narrated dead-score runs (e.g. editorial footnotes) past a placed
+	// chapter's outer anchors so they cannot bleed into adjacent chapters.
+	if (!recovery) {
+		for (const location of locations) {
+			if (location.status !== "found" || location.anchors.length === 0) continue;
+			const firstSent = text.sentence[location.tokenStart] ?? 0;
+			const lastSent = text.sentence[location.tokenEnd - 1] ?? firstSent;
+			const firstAnchorSent = text.sentence[location.anchors[0]!.token] ?? firstSent;
+			const lastAnchorSent = text.sentence[location.anchors.at(-1)!.token] ?? lastSent;
+			for (let s = lastSent; s > lastAnchorSent; s -= 1) {
+				const sf = sentenceFrames[s];
+				const range = sentenceTokens[s];
+				if (!sf || !range) continue;
+				const count = range.end - range.start;
+				if (count >= settings.droppedMinTokens && sf.score < DEAD_EDGE_SENTENCE_SCORE) {
+					sentenceFrames[s] = undefined;
+					droppedSentences += 1;
+				} else if (count >= settings.droppedMinTokens) {
+					break;
+				}
+			}
+			for (let s = firstSent; s < firstAnchorSent; s += 1) {
+				const sf = sentenceFrames[s];
+				const range = sentenceTokens[s];
+				if (!sf || !range) continue;
+				const count = range.end - range.start;
+				if (count >= settings.droppedMinTokens && sf.score < DEAD_EDGE_SENTENCE_SCORE) {
+					sentenceFrames[s] = undefined;
+					droppedSentences += 1;
+				} else if (count >= settings.droppedMinTokens) {
+					break;
+				}
+			}
+		}
 	}
 
 	// Frames to cues: apply the model's timing correction, keep cues ordered
@@ -294,7 +867,13 @@ export function alignWithCtc(
 			const gap = Array.from({ length: sentence - previous - 1 }, (_, offset) => previous! + 1 + offset).filter(
 				(index) => located.has(index) && sentences[index]?.sectionRef === sentences[previous!]?.sectionRef,
 			);
-			if (after && after.track === before.track && gap.length > 0 && after.startMs > before.endMs) {
+			if (
+				after &&
+				after.track === before.track &&
+				sentences[sentence]?.sectionRef === sentences[previous]?.sectionRef &&
+				gap.length > 0 &&
+				after.startMs > before.endMs
+			) {
 				const weights = gap.map((index) => Math.max(1, sentences[index]?.text.length ?? 1));
 				const total = weights.reduce((sum, weight) => sum + weight, 0);
 				let cursor = before.endMs;
